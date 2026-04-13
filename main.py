@@ -2,12 +2,12 @@ import os
 import cv2 
 import Equirec2Perspec as E2P 
 
-def extract_views(input_image, output_dir, fov=90, height=1080, width=1080):
+def extract_views(input_image, output_dir, fov=60, height=1080, width=1080):
     equ = E2P.Equirectangular(input_image)    # load panorama image
 
     
     pitch_values = [0] 
-    yaw_values = range(-180, 180, fov)  
+    yaw_values = range(-180, 180, 45)  
     # fov 
     for pitch in pitch_values:
         for yaw in yaw_values:
@@ -21,6 +21,6 @@ def extract_views(input_image, output_dir, fov=90, height=1080, width=1080):
 
 
 if __name__ == '__main__':
-    output_dir = 'output_views_2'
+    output_dir = 'output_views'
     os.makedirs(output_dir, exist_ok=True)  # Create output directory if it doesn't exist
-    extract_views('panorama_test.jpg', output_dir, fov=60)
+    extract_views('panorama_test.jpg', output_dir, fov=61.92)
