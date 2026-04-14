@@ -53,7 +53,7 @@ def extract_views(
             }
         )
     # --- top view slice. It is a square. ---
-    top_bottom_hfov = 150.0 
+    top_bottom_hfov = 100.0 
     top_bottom_focal_px = (slice_w / 2.0) / math.tan(math.radians(top_bottom_hfov) / 2.0)
     img_top = equ.GetPerspective(top_bottom_hfov, 0, 90, slice_w, slice_w)
     path_top = os.path.join(output_dir, "view_0_90.jpg")
