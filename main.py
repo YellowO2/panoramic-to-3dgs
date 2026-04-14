@@ -1,26 +1,77 @@
 import os
 import cv2 
-import Equirec2Perspec as E2P 
+import math
+from functions.sharp_infer import extracted_views_to_3dgs
+from functions import Equirec2Perspec as E2P 
 
-def extract_views(input_image, output_dir, fov=60, height=1080, width=1080):
-    equ = E2P.Equirectangular(input_image)    # load panorama image
+# cuts the panoramic into correct inputs for MLsharp
+def extract_views(
+    input_image,
+    output_dir,
+    slice_count=4,
+    overlap_degrees=10.0,
+):
+    equ = E2P.Equirectangular(input_image)  # load panorama image
 
-    
-    pitch_values = [0] 
-    yaw_values = range(-180, 180, 45)  
-    # fov 
-    for pitch in pitch_values:
-        for yaw in yaw_values:
-            # 90 degree fov means top 45 + bottom 45 here
-            # pitch refers to vertical axis, where 0 is center of image. The max top is 90 and bottom -90
-            # yaw refers to horizontal axis. The max right is 180 and left -180.
-            img = equ.GetPerspective(fov, yaw, pitch, height, width)
-            output_path = os.path.join(output_dir, f'view_{yaw}_{pitch}.jpg')
-            cv2.imwrite(output_path, img)  
+    pano_h, pano_w = equ._img.shape[:2]
+    slice_w = max(64, pano_w // slice_count)
+    slice_h = pano_h
+
+    span_degrees = 360.0 / slice_count
+    hfov = span_degrees + float(overlap_degrees)
+    hfov = min(170.0, hfov)
+
+    focal_px = (slice_w / 2.0) / math.tan(math.radians(hfov) / 2.0)
+    vfov = math.degrees(2.0 * math.atan((slice_h / 2.0) / focal_px))
+    print(
+        f"Panorama: {pano_w}x{pano_h} | slices: {slice_count} | slice: {slice_w}x{slice_h} | "
+        f"HFOV: {hfov:.2f} | VFOV: {vfov:.2f} | focal_px: {focal_px:.2f}"
+    )
+
+    yaw_values = [(span_degrees * i) for i in range(slice_count)] # step through the size of a slice without overlaps.
+
+    views = []
+
+    for yaw in yaw_values:
+        # 90 degree fov means top 45 + bottom 45 here
+        # pitch refers to vertical axis, where 0 is center of image. The max top is 90 and bottom -90
+        # yaw refers to horizontal axis. The max right is 180 and left -180.
+        pitch = 0
+        img = equ.GetPerspective(hfov, yaw, pitch, slice_h, slice_w)
+        output_path = os.path.join(output_dir, f"view_{int(round(yaw))}_{int(round(pitch))}.jpg")
+        cv2.imwrite(output_path, img)
+
+        views.append(
+            {
+                "yaw": yaw,
+                "pitch": pitch,
+                "path": output_path,
+                "width": slice_w,
+                "height": slice_h,
+            }
+        )
+
+    return views, focal_px
 
 
 
 if __name__ == '__main__':
     output_dir = 'output_views'
-    os.makedirs(output_dir, exist_ok=True)  # Create output directory if it doesn't exist
-    extract_views('panorama_test.jpg', output_dir, fov=61.92)
+    os.makedirs(output_dir, exist_ok=True) 
+    views, focal_px = extract_views(
+        'panorama_test.jpg',
+        output_dir,
+        slice_count=4,
+        overlap_degrees=10.0,
+    )
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    model_path = os.path.join(script_dir, "models", "sharp_2572gikvuh.pt")
+
+    extracted_views_to_3dgs(
+        views,
+        focal_px=float(focal_px),
+        model_path=model_path,
+        output_dir=output_dir,
+        # can specify device param if what to force CPU when u have GPU.
+    )
