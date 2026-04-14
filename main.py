@@ -49,33 +49,36 @@ def extract_views(
                 "path": output_path,
                 "width": slice_w,
                 "height": slice_h,
+                "focal_px": focal_px,
             }
         )
     # --- top view slice. It is a square. ---
-    img_top = equ.GetPerspective(hfov, 0, 90, slice_w, slice_w)
+    top_bottom_hfov = 150.0 
+    top_bottom_focal_px = (slice_w / 2.0) / math.tan(math.radians(top_bottom_hfov) / 2.0)
+    img_top = equ.GetPerspective(top_bottom_hfov, 0, 90, slice_w, slice_w)
     path_top = os.path.join(output_dir, "view_0_90.jpg")
     cv2.imwrite(path_top, img_top)
     views.append({
         "yaw": 0, "pitch": 90, 
-        "path": path_top, "width": slice_w, "height": slice_w
+        "path": path_top, "width": slice_w, "height": slice_w, "focal_px": top_bottom_focal_px
     })
 
     # --- bottom view slice ---
-    img_bottom = equ.GetPerspective(hfov, 0, -90, slice_w, slice_w)
+    img_bottom = equ.GetPerspective(top_bottom_hfov, 0, -90, slice_w, slice_w)
     path_bottom = os.path.join(output_dir, "view_0_-90.jpg")
     cv2.imwrite(path_bottom, img_bottom)
     views.append({
         "yaw": 0, "pitch": -90, 
-        "path": path_bottom, "width": slice_w, "height": slice_w
+        "path": path_bottom, "width": slice_w, "height": slice_w, "focal_px": top_bottom_focal_px
     })
-    return views, focal_px
+    return views
 
 
 
 if __name__ == '__main__':
     output_dir = 'output_views'
     os.makedirs(output_dir, exist_ok=True) 
-    views, focal_px = extract_views(
+    views = extract_views(
         'panorama_test.jpg',
         output_dir,
         slice_count=4,
@@ -88,7 +91,6 @@ if __name__ == '__main__':
     
     extracted_views_to_3dgs(
         views,
-        focal_px=float(focal_px),
         model_path=model_path,
         output_dir=output_dir,
         # can specify device param if what to force CPU when u have GPU.

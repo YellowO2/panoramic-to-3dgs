@@ -26,7 +26,6 @@ def load_sharp_predictor(model_path: str, device: str = None):
 def extracted_views_to_3dgs(
     extracted_views,
     *,
-    focal_px: float,
     model_path: str,
     output_dir: str,
     device: str = None,
@@ -42,10 +41,12 @@ def extracted_views_to_3dgs(
             raise RuntimeError(f"Failed to read image: {v['path']}")
 
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-        gaussians = predict_image(predictor, img_rgb, float(focal_px), device_obj)
+        
+        current_focal_px = float(v["focal_px"])
+        gaussians = predict_image(predictor, img_rgb, current_focal_px, device_obj)
 
         ply_path = os.path.join(
             ply_dir,
             f"view_{int(round(v['yaw']))}_{int(round(v['pitch']))}.ply",
         )
-        save_ply(gaussians, float(focal_px), (v["height"], v["width"]), ply_path)
+        save_ply(gaussians, current_focal_px, (v["height"], v["width"]), ply_path)
