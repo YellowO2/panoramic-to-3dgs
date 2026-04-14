@@ -66,8 +66,9 @@ if __name__ == '__main__':
     )
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
+    output_dir = 'output_3dgs'
     model_path = os.path.join(script_dir, "models", "sharp_2572gikvuh.pt")
-
+    
     extracted_views_to_3dgs(
         views,
         focal_px=float(focal_px),
