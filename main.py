@@ -32,6 +32,7 @@ def extract_views(
 
     views = []
 
+    # generate the side slices first.
     for yaw in yaw_values:
         # 90 degree fov means top 45 + bottom 45 here
         # pitch refers to vertical axis, where 0 is center of image. The max top is 90 and bottom -90
@@ -50,7 +51,23 @@ def extract_views(
                 "height": slice_h,
             }
         )
+    # --- top view slice. It is a square. ---
+    img_top = equ.GetPerspective(hfov, 0, 90, slice_w, slice_w)
+    path_top = os.path.join(output_dir, "view_0_90.jpg")
+    cv2.imwrite(path_top, img_top)
+    views.append({
+        "yaw": 0, "pitch": 90, 
+        "path": path_top, "width": slice_w, "height": slice_w
+    })
 
+    # --- bottom view slice ---
+    img_bottom = equ.GetPerspective(hfov, 0, -90, slice_w, slice_w)
+    path_bottom = os.path.join(output_dir, "view_0_-90.jpg")
+    cv2.imwrite(path_bottom, img_bottom)
+    views.append({
+        "yaw": 0, "pitch": -90, 
+        "path": path_bottom, "width": slice_w, "height": slice_w
+    })
     return views, focal_px
 
 
