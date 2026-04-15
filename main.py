@@ -11,7 +11,7 @@ def extract_views(
     input_image,
     output_dir,
     slice_count=4,
-    overlap_degrees=10.0,
+    overlap_degrees=20.0,
 ):
     equ = E2P.Equirectangular(input_image)  # load panorama image
 
@@ -56,7 +56,7 @@ def extract_views(
                 "vfov": vfov,
             }
         )
-    # --- top view slice. It is a square. ---
+    # top view slice. It is a square.
     top_bottom_hfov = 100.0 
     top_bottom_focal_px = (slice_w / 2.0) / math.tan(math.radians(top_bottom_hfov) / 2.0)
     img_top = equ.GetPerspective(top_bottom_hfov, 0, 90, slice_w, slice_w)
@@ -67,7 +67,7 @@ def extract_views(
         "path": path_top, "width": slice_w, "height": slice_w, "focal_px": top_bottom_focal_px
     })
 
-    # --- bottom view slice ---
+    # bottom view slice 
     img_bottom = equ.GetPerspective(top_bottom_hfov, 0, -90, slice_w, slice_w)
     path_bottom = os.path.join(output_dir, "view_0_-90.jpg")
     cv2.imwrite(path_bottom, img_bottom)
