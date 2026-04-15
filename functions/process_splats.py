@@ -40,7 +40,7 @@ def filter_gaussians(gaussians: Gaussians3D, mask: torch.Tensor) -> Gaussians3D:
         singular_values=gaussians.singular_values[:, mask, :],
         quaternions=gaussians.quaternions[:, mask, :],
         colors=gaussians.colors[:, mask, :],
-        opacities=gaussians.opacities[:, mask, :],
+        opacities=gaussians.opacities[:, mask],
     )
 
 def process_splats(views: list, splats_list: list[Gaussians3D]) -> Gaussians3D:
