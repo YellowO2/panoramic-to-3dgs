@@ -11,7 +11,7 @@ def extract_views(
     input_image,
     output_dir,
     slice_count=4,
-    overlap_degrees=10.0,
+    overlap_degrees,
 ):
     equ = E2P.Equirectangular(input_image)  # load panorama image
 
