@@ -64,7 +64,7 @@ def extract_views(
     cv2.imwrite(path_top, img_top)
     views_data.append({
         "yaw": 0, "pitch": 90, 
-        "path": path_top, "width": slice_w, "height": slice_w, "focal_px": top_bottom_focal_px
+        "path": path_top, "width": slice_w, "height": slice_w, "focal_px": top_bottom_focal_px, "hfov": top_bottom_hfov, "vfov": top_bottom_hfov,
     })
 
     # bottom view slice 
@@ -73,7 +73,7 @@ def extract_views(
     cv2.imwrite(path_bottom, img_bottom)
     views_data.append({
         "yaw": 0, "pitch": -90, 
-        "path": path_bottom, "width": slice_w, "height": slice_w, "focal_px": top_bottom_focal_px
+        "path": path_bottom, "width": slice_w, "height": slice_w, "focal_px": top_bottom_focal_px, "hfov": top_bottom_hfov, "vfov": top_bottom_hfov,
     })
     return views_data
 
@@ -94,7 +94,7 @@ if __name__ == '__main__':
     model_path = os.path.join(script_dir, "models", "sharp_2572gikvuh.pt")
     test_views = views_data[:1] 
     gaussian_list = extracted_views_to_3dgs(
-        test_views,
+        views_data,
         model_path=model_path,
         output_dir=output_dir,
         # can specify device param if what to force CPU when u have GPU.
