@@ -51,6 +51,8 @@ def extract_views(
                 "width": slice_w,
                 "height": slice_h,
                 "focal_px": focal_px,
+                "hfov": hfov,
+                "vfov": vfov,
             }
         )
     # --- top view slice. It is a square. ---
