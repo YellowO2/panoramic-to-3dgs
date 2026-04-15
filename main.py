@@ -2,6 +2,7 @@ import os
 import cv2 
 import math
 from functions.sharp_infer import extracted_views_to_3dgs
+from functions.process_splats import process_splats
 from functions import Equirec2Perspec as E2P 
 
 # cuts the panoramic into correct inputs for MLsharp
@@ -30,7 +31,7 @@ def extract_views(
 
     yaw_values = [(span_degrees * i) for i in range(slice_count)] # step through the size of a slice without overlaps.
 
-    views = []
+    views_data = []
 
     # generate the side slices first.
     for yaw in yaw_values:
@@ -42,7 +43,7 @@ def extract_views(
         output_path = os.path.join(output_dir, f"view_{int(round(yaw))}_{int(round(pitch))}.jpg")
         cv2.imwrite(output_path, img)
 
-        views.append(
+        views_data.append(
             {
                 "yaw": yaw,
                 "pitch": pitch,
@@ -58,7 +59,7 @@ def extract_views(
     img_top = equ.GetPerspective(top_bottom_hfov, 0, 90, slice_w, slice_w)
     path_top = os.path.join(output_dir, "view_0_90.jpg")
     cv2.imwrite(path_top, img_top)
-    views.append({
+    views_data.append({
         "yaw": 0, "pitch": 90, 
         "path": path_top, "width": slice_w, "height": slice_w, "focal_px": top_bottom_focal_px
     })
@@ -67,18 +68,18 @@ def extract_views(
     img_bottom = equ.GetPerspective(top_bottom_hfov, 0, -90, slice_w, slice_w)
     path_bottom = os.path.join(output_dir, "view_0_-90.jpg")
     cv2.imwrite(path_bottom, img_bottom)
-    views.append({
+    views_data.append({
         "yaw": 0, "pitch": -90, 
         "path": path_bottom, "width": slice_w, "height": slice_w, "focal_px": top_bottom_focal_px
     })
-    return views
+    return views_data
 
 
 
 if __name__ == '__main__':
     output_dir = 'output_views'
     os.makedirs(output_dir, exist_ok=True) 
-    views = extract_views(
+    views_data = extract_views(
         'panorama_test.jpg',
         output_dir,
         slice_count=4,
@@ -88,10 +89,13 @@ if __name__ == '__main__':
     script_dir = os.path.dirname(os.path.abspath(__file__))
     output_dir = 'output_3dgs'
     model_path = os.path.join(script_dir, "models", "sharp_2572gikvuh.pt")
-    
-    extracted_views_to_3dgs(
-        views,
+    test_views = views_data[:1] 
+    gaussian_list = extracted_views_to_3dgs(
+        test_views,
         model_path=model_path,
         output_dir=output_dir,
         # can specify device param if what to force CPU when u have GPU.
     )
+
+    process_splats(views_data, gaussian_list)
+

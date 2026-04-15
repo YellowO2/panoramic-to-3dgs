@@ -1,45 +1,54 @@
 
 import torch
 import numpy as np
+import math
+from scipy.spatial.transform import Rotation
+from sharp.utils.gaussians import Gaussians3D, apply_transform
 
 
 def trim_splat_by_fov(gaussians: Gaussians3D, hfov_limit: float, vfov_limit: float = None) -> Gaussians3D:
-    """
-    Takes a single Gaussians3D object and removes points outside the FOV limits.
-    """
-    # 1. Start here! Extract positions
+    # this function trims away dirty edges of the splat for a clean cut.
     positions = gaussians.mean_vectors
-    
-    # 2. Get the Z depth (index 2)
-    
-    # 3. Create your first boolean mask (e.g. z > 0)
-    
-    # 4. Do the trig for hfov_limit to find the max X/Z ratio and update the mask
-    
-    # 5. Return the new filtered Gaussians3D object
-    pass 
+    x = positions[:, 0]
+    z = positions[:, 2]
+    half_hfov_rad = math.radians(hfov_limit / 2.0)
+    max_x_ratio = math.tan(half_hfov_rad)
+    mask = (z>0) & (torch.abs(x / z) <= max_x_ratio) # trim away points out of hfov specified
 
+    #TODO: maybe implement for vfov, but not necessary now.
+    return gaussians[mask]
 
-def process_splats(views: list, splats_list: list):
-    """
-    Main orchestrator for post-processing multiple views of 3D Gaussians.
-    """
+def rotate_splat(gaussians: Gaussians3D, yaw: float, pitch: float) -> Gaussians3D:
+    rotation = Rotation.from_euler('yx', [yaw, pitch], degrees=True)
+    # add 3x1 zero column to represent no translation.
+    transform_with_translation = torch.cat([torch.tensor(rotation.as_matrix(), dtype=torch.float32), torch.zeros(3, 1)], dim=1)
+    return apply_transform(gaussians, transform_with_translation)
+
+def merge_gaussians(splats_list: list[Gaussians3D]) -> Gaussians3D:
+    # combine the splats into one
+    return Gaussians3D(
+        mean_vectors=torch.cat([item.mean_vectors for item in splats_list], dim=1),
+        singular_values=torch.cat([item.singular_values for item in splats_list], dim=1),
+        quaternions=torch.cat([item.quaternions for item in splats_list], dim=1),
+        colors=torch.cat([item.colors for item in splats_list], dim=1),
+        opacities=torch.cat([item.opacities for item in splats_list], dim=1),
+    )
+
+def process_splats(views: list, splats_list: list[Gaussians3D]) -> Gaussians3D:
+    # main orchestrator for post-processing the generated 3dgs slices.
+
     processed_splats = []
-    
-    # Zipping views and their corresponding generated splats
+    # splats and their corresponding view data
     for view, splat_group in zip(views, splats_list):
         
-        # 1. Trimming (Remove edges)
-        # Using a buffer: if image was 90 deg, we keep 85 deg to remove the 2.5 deg edges
+        # 1. trim away the noise splats edges for a clean cut.
         hfov_keep = view["hfov"] - 5.0
+        cleaned_splat = trim_splat_by_fov(splat_group, hfov_limit=hfov_keep)
         
-        # You can also compute and pass vfov_keep similarly if needed.
-        # Apple MLSharp tends to lose coherence past 80-90 degrees radially.
-        cleaned_splat = trim_splats(splat_group, hfov_limit=hfov_keep)
-        
-        # TODO: Step 2. Rotations (Yaw/Pitch back to world space)
-        # TODO: Step 3. Translation scaling / alignment
+        # 2. rotate the splats to where they are supposed to be.
+        rotated_splat = rotate_splat(cleaned_splat, yaw=view["yaw"], pitch=view["pitch"])
 
-        processed_splats.append(cleaned_splat)
+        # TODO: Step 3. Translation scaling / alignment
+        processed_splats.append(rotated_splat)
         
-    return processed_splats
+    return merge_gaussians(processed_splats)

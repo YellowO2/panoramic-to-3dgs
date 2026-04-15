@@ -35,6 +35,8 @@ def extracted_views_to_3dgs(
     ply_dir = os.path.join(output_dir, "ply")
     os.makedirs(ply_dir, exist_ok=True)
 
+    gaussian_list = []
+
     for v in extracted_views:
         img_bgr = cv2.imread(v["path"], cv2.IMREAD_COLOR)
         if img_bgr is None:
@@ -50,3 +52,6 @@ def extracted_views_to_3dgs(
             f"view_{int(round(v['yaw']))}_{int(round(v['pitch']))}.ply",
         )
         save_ply(gaussians, current_focal_px, (v["height"], v["width"]), ply_path)
+        gaussian_list.append(gaussians)
+    
+    return gaussian_list
