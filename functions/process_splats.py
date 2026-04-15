@@ -9,14 +9,14 @@ from sharp.utils.gaussians import Gaussians3D, apply_transform
 def trim_splat_by_fov(gaussians: Gaussians3D, hfov_limit: float, vfov_limit: float = None) -> Gaussians3D:
     # this function trims away dirty edges of the splat for a clean cut.
     positions = gaussians.mean_vectors
-    x = positions[:, 0]
-    z = positions[:, 2]
+    x= positions[0][:,0]
+    z = positions[0][:, 2]
     half_hfov_rad = math.radians(hfov_limit / 2.0)
     max_x_ratio = math.tan(half_hfov_rad)
     mask = (z>0) & (torch.abs(x / z) <= max_x_ratio) # trim away points out of hfov specified
 
     #TODO: maybe implement for vfov, but not necessary now.
-    return gaussians[mask]
+    return filter_gaussians(gaussians, mask)
 
 def rotate_splat(gaussians: Gaussians3D, yaw: float, pitch: float) -> Gaussians3D:
     rotation = Rotation.from_euler('yx', [yaw, pitch], degrees=True)
@@ -32,6 +32,15 @@ def merge_gaussians(splats_list: list[Gaussians3D]) -> Gaussians3D:
         quaternions=torch.cat([item.quaternions for item in splats_list], dim=1),
         colors=torch.cat([item.colors for item in splats_list], dim=1),
         opacities=torch.cat([item.opacities for item in splats_list], dim=1),
+    )
+
+def filter_gaussians(gaussians: Gaussians3D, mask: torch.Tensor) -> Gaussians3D:
+    return Gaussians3D(
+        mean_vectors=gaussians.mean_vectors[:, mask, :],
+        singular_values=gaussians.singular_values[:, mask, :],
+        quaternions=gaussians.quaternions[:, mask, :],
+        colors=gaussians.colors[:, mask, :],
+        opacities=gaussians.opacities[:, mask, :],
     )
 
 def process_splats(views: list, splats_list: list[Gaussians3D]) -> Gaussians3D:
