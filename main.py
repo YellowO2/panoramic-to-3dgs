@@ -4,6 +4,7 @@ import math
 from functions.sharp_infer import extracted_views_to_3dgs
 from functions.process_splats import process_splats
 from functions import Equirec2Perspec as E2P 
+from sharp.utils.gaussians import save_ply
 
 # cuts the panoramic into correct inputs for MLsharp
 def extract_views(
@@ -99,5 +100,12 @@ if __name__ == '__main__':
         # can specify device param if what to force CPU when u have GPU.
     )
 
-    process_splats(views_data, gaussian_list)
+    merged_splat =process_splats(views_data, gaussian_list)
+
+    save_ply(
+        merged_splat, 
+        f_px=test_views[0]["focal_px"], 
+        image_shape=(test_views[0]["height"], test_views[0]["width"]), 
+        path=os.path.join(output_dir, "final.ply")
+    )
 
