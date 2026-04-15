@@ -19,9 +19,13 @@ def trim_splat_by_fov(gaussians: Gaussians3D, hfov_limit: float, vfov_limit: flo
     return filter_gaussians(gaussians, mask)
 
 def rotate_splat(gaussians: Gaussians3D, yaw: float, pitch: float) -> Gaussians3D:
+    device = gaussians.mean_vectors.device # ensure same gpu used.
     rotation = Rotation.from_euler('yx', [yaw, pitch], degrees=True)
     # add 3x1 zero column to represent no translation.
-    transform_with_translation = torch.cat([torch.tensor(rotation.as_matrix(), dtype=torch.float32), torch.zeros(3, 1)], dim=1)
+    transform_with_translation = torch.cat([
+        torch.tensor(rotation.as_matrix(), dtype=torch.float32).to(device), 
+        torch.zeros((3, 1)).to(device)
+    ], dim=1)
     return apply_transform(gaussians, transform_with_translation)
 
 def merge_gaussians(splats_list: list[Gaussians3D]) -> Gaussians3D:
