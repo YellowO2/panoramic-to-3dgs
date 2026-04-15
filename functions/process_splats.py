@@ -55,7 +55,7 @@ def process_splats(views: list, splats_list: list[Gaussians3D]) -> Gaussians3D:
     for view, splat_group in zip(views, splats_list):
         
         # 1. trim away the noise splats edges for a clean cut.
-        hfov_keep = view["hfov"] - 10.0
+        hfov_keep = view["hfov"] - 8.0
         cleaned_splat = trim_splat_by_fov(splat_group, hfov_limit=hfov_keep)
         
         # 2. rotate the splats to where they are supposed to be.

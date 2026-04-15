@@ -11,13 +11,13 @@ def extract_views(
     input_image,
     output_dir,
     slice_count=4,
-    overlap_degrees=20.0,
+    overlap_degrees=10.0,
 ):
     equ = E2P.Equirectangular(input_image)  # load panorama image
 
     pano_h, pano_w = equ._img.shape[:2]
     slice_w = max(64, pano_w // slice_count)
-    slice_h = pano_h
+    slice_h = pano_h*0.8
 
     span_degrees = 360.0 / slice_count
     hfov = span_degrees + float(overlap_degrees)
@@ -68,13 +68,13 @@ def extract_views(
     })
 
     # bottom view slice 
-    img_bottom = equ.GetPerspective(top_bottom_hfov, 0, -90, slice_w, slice_w)
-    path_bottom = os.path.join(output_dir, "view_0_-90.jpg")
-    cv2.imwrite(path_bottom, img_bottom)
-    views_data.append({
-        "yaw": 0, "pitch": -90, 
-        "path": path_bottom, "width": slice_w, "height": slice_w, "focal_px": top_bottom_focal_px, "hfov": top_bottom_hfov, "vfov": top_bottom_hfov,
-    })
+    # img_bottom = equ.GetPerspective(top_bottom_hfov, 0, -90, slice_w, slice_w)
+    # path_bottom = os.path.join(output_dir, "view_0_-90.jpg")
+    # cv2.imwrite(path_bottom, img_bottom)
+    # views_data.append({
+    #     "yaw": 0, "pitch": -90, 
+    #     "path": path_bottom, "width": slice_w, "height": slice_w, "focal_px": top_bottom_focal_px, "hfov": top_bottom_hfov, "vfov": top_bottom_hfov,
+    # })
     return views_data
 
 
@@ -86,7 +86,7 @@ if __name__ == '__main__':
         'panorama_test.jpg',
         output_dir,
         slice_count=4,
-        overlap_degrees=10.0,
+        overlap_degrees=20.0,
     )
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
