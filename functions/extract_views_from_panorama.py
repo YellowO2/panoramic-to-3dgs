@@ -113,7 +113,6 @@ def extract_views_for_depthmap(
             # 90 degree fov means top 45 + bottom 45 here
             # pitch refers to vertical axis, where 0 is center of image. The max top is 90 and bottom -90
             # yaw refers to horizontal axis. The max right is 180 and left -180.
-            pitch = 0
             img = equ.GetPerspective(hfov, yaw, pitch, slice_h, slice_w)
             output_path = os.path.join(output_dir, f"view_{int(round(yaw))}_{int(round(pitch))}.jpg")
             cv2.imwrite(output_path, img)
