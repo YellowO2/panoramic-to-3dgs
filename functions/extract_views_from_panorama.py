@@ -81,7 +81,7 @@ def extract_views_for_depthmap(
     input_image,
     output_dir,
     overlap_degrees,
-    slice_count=4,
+    slice_count,
 ):
     equ = E2P.Equirectangular(input_image)  # load panorama image
 
@@ -142,11 +142,11 @@ def extract_views_for_depthmap(
     })
 
     # bottom view slice 
-    # img_bottom = equ.GetPerspective(top_bottom_hfov, 0, -90, slice_w, slice_w)
-    # path_bottom = os.path.join(output_dir, "view_0_-90.jpg")
-    # cv2.imwrite(path_bottom, img_bottom)
-    # views_data.append({
-    #     "yaw": 0, "pitch": -90, 
-    #     "path": path_bottom, "width": slice_w, "height": slice_w, "focal_px": top_bottom_focal_px, "hfov": top_bottom_hfov, "vfov": top_bottom_hfov,
-    # })
+    img_bottom = equ.GetPerspective(top_bottom_hfov, 0, -90, slice_w, slice_w)
+    path_bottom = os.path.join(output_dir, "view_0_-90.jpg")
+    cv2.imwrite(path_bottom, img_bottom)
+    views_data.append({
+        "yaw": 0, "pitch": -90, 
+        "path": path_bottom, "width": slice_w, "height": slice_w, "focal_px": top_bottom_focal_px, "hfov": top_bottom_hfov, "vfov": top_bottom_hfov,
+    })
     return views_data

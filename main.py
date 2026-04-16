@@ -13,9 +13,21 @@ if __name__ == '__main__':
     views_data = extract_views_for_depthmap(
         'panorama_1.347145_103.6917918.jpg',
         output_dir,
-        slice_count=6,
-        overlap_degrees=20.0,
+        slice_count=12,
+        overlap_degrees=30.0,
     )
+    print("finish 1")
+    
+    # output_dir = 'output_views_2'
+    # os.makedirs(output_dir, exist_ok=True) 
+    # views_data = extract_views_for_depthmap(
+    #     'panorama_1.347145_103.6917918.jpg',
+    #     output_dir,
+    #     slice_count=4,
+    #     overlap_degrees=30.0,
+    # )
+    # print("finish 2")
+
     # views_data = extract_views(
     #     'panorama_1.347145_103.6917918.jpg',
     #     output_dir,
