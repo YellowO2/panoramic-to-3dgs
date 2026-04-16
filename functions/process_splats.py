@@ -47,6 +47,14 @@ def filter_gaussians(gaussians: Gaussians3D, mask: torch.Tensor) -> Gaussians3D:
         opacities=gaussians.opacities[:, mask],
     )
 
+def align_splats(splats_list: list[Gaussians3D]) -> list[Gaussians3D]:
+    # optional step to further align the splats together, can be done by ICP or other point cloud registration methods.
+    # for simplicity, we will skip this step for now, but it can be implemented if needed.
+
+    # method 1: naive approach of aligning the splat points to the point cloud using ICP?
+
+    return splats_list
+
 def process_splats(views: list, splats_list: list[Gaussians3D]) -> Gaussians3D:
     # main orchestrator for post-processing the generated 3dgs slices.
 

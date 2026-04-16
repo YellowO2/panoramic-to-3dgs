@@ -11,7 +11,7 @@ if __name__ == '__main__':
     output_dir = 'output_views'
     os.makedirs(output_dir, exist_ok=True) 
     views_data = extract_views(
-        'panorama_test.jpg',
+        'panorama_1.347145_103.6917918.jpg',
         output_dir,
         slice_count=4,
         overlap_degrees=20.0,
