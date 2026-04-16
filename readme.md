@@ -10,3 +10,6 @@ To use a manually downloaded checkpoint, specify it with the -c flag:
 sharp predict -i /path/to/input/images -o /path/to/output/gaussians -c sharp_2572gikvuh.pt
 For our case:
 sharp predict -i ./output_views/view_0_0.jpg -o ./output_3dgs -c ./models/sharp_2572gikvuh.pt
+
+to use depth model:
+da3 auto ./output_views     --export-format glb     --export-dir ./output_depth     --model-dir ./models/models--depth-anything--DA3-LARGE-1.1/snapshots/0e109ae307c5982f319a67cf6f9f99ccdc0ec97c

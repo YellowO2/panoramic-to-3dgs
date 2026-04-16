@@ -38,7 +38,7 @@ def extract_views(
         # yaw refers to horizontal axis. The max right is 180 and left -180.
         pitch = 0
         img = equ.GetPerspective(hfov, yaw, pitch, slice_h, slice_w)
-        output_path = os.path.join(output_dir, f"view_{int(round(yaw))}_{int(round(pitch))}.jpg")
+        output_path = os.path.join(output_dir, f"view_{int(round(pitch))}_{int(round(yaw))}.jpg")
         cv2.imwrite(output_path, img)
 
         views_data.append(
