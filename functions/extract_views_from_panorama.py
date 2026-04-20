@@ -102,7 +102,8 @@ def extract_views_for_depthmap(
         f"HFOV: {hfov:.2f} | VFOV: {vfov:.2f} | focal_px: {focal_px:.2f}"
     )
 
-    pitch_values = [(vfov * i) for i in range(v_slice_count//2)] # step through the size of a slice without overlaps.
+    # pitch_values = [(vfov * i) for i in range(v_slice_count//2)] # step through the size of a slice without overlaps.
+    pitch_values = [0]
     yaw_values = [(span_degrees * i) for i in range(slice_count)] # step through the size of a slice without overlaps.
 
     views_data = []
