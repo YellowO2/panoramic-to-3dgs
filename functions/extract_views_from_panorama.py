@@ -87,9 +87,7 @@ def extract_views_for_depthmap(
 
     pano_h, pano_w = equ._img.shape[:2]
     slice_w = max(64, pano_w // slice_count)
-    # lets have virticle slice as 1/2 of horizontal slice count
-    v_slice_count = slice_count // 2
-    slice_h = pano_h//v_slice_count
+    slice_h = slice_w/2
 
     span_degrees = 360.0 / slice_count
     hfov = span_degrees + float(overlap_degrees)
@@ -130,23 +128,13 @@ def extract_views_for_depthmap(
                     "vfov": vfov,
                 }
             )
-    # top view slice. It is a square.
-    top_bottom_hfov = 100.0 
-    top_bottom_focal_px = (slice_w / 2.0) / math.tan(math.radians(top_bottom_hfov) / 2.0)
-    img_top = equ.GetPerspective(top_bottom_hfov, 0, 90, slice_w, slice_w)
-    path_top = os.path.join(output_dir, "view_0_90.jpg")
-    cv2.imwrite(path_top, img_top)
-    views_data.append({
-        "yaw": 0, "pitch": 90, 
-        "path": path_top, "width": slice_w, "height": slice_w, "focal_px": top_bottom_focal_px, "hfov": top_bottom_hfov, "vfov": top_bottom_hfov,
-    })
 
-    # bottom view slice 
-    img_bottom = equ.GetPerspective(top_bottom_hfov, 0, -90, slice_w, slice_w)
-    path_bottom = os.path.join(output_dir, "view_0_-90.jpg")
-    cv2.imwrite(path_bottom, img_bottom)
-    views_data.append({
-        "yaw": 0, "pitch": -90, 
-        "path": path_bottom, "width": slice_w, "height": slice_w, "focal_px": top_bottom_focal_px, "hfov": top_bottom_hfov, "vfov": top_bottom_hfov,
-    })
+    # # bottom view slice 
+    # img_bottom = equ.GetPerspective(top_bottom_hfov, 0, -90, slice_w, slice_w)
+    # path_bottom = os.path.join(output_dir, "view_0_-90.jpg")
+    # cv2.imwrite(path_bottom, img_bottom)
+    # views_data.append({
+    #     "yaw": 0, "pitch": -90, 
+    #     "path": path_bottom, "width": slice_w, "height": slice_w, "focal_px": top_bottom_focal_px, "hfov": top_bottom_hfov, "vfov": top_bottom_hfov,
+    # })
     return views_data
