@@ -60,6 +60,7 @@ safetensors==0.7.0
 scipy==1.17.1
 setuptools==81.0.0
 sharp @ git+https://github.com/apple/ml-sharp.git@1eaa046834b81852261262b41b0919f5c1efdd2e
+depth-anything-3 @ git+https://github.com/ByteDance-Seed/Depth-Anything-3.git@41736238f5bced4debf3f2a12375d2466874866d
 shellingham==1.5.4
 six==1.17.0
 sympy==1.14.0
