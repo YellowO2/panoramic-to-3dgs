@@ -10,8 +10,10 @@ def extract_views(
     overlap_degrees,
     slice_count=4,
     prefix="",
+    panorama_depth=None,
 ):
     equ = E2P.Equirectangular(input_image)  # load panorama image
+    depth_equ = E2P.Equirectangular(panorama_depth) if panorama_depth is not None else None
 
     pano_h, pano_w = equ._img.shape[:2]
     slice_w = max(64, pano_w // slice_count)
@@ -42,37 +44,50 @@ def extract_views(
         output_path = os.path.join(output_dir, f"{prefix}view_{int(round(yaw))}_{int(round(pitch))}.jpg")
         cv2.imwrite(output_path, img)
 
-        views_data.append(
-            {
-                "yaw": yaw,
-                "pitch": pitch,
-                "path": output_path,
-                "width": slice_w,
-                "height": slice_h,
-                "focal_px": focal_px,
-                "hfov": hfov,
-                "vfov": vfov,
-            }
-        )
+        view_info = {
+            "yaw": yaw,
+            "pitch": pitch,
+            "path": output_path,
+            "width": slice_w,
+            "height": slice_h,
+            "focal_px": focal_px,
+            "hfov": hfov,
+            "vfov": vfov,
+        }
+        
+        if depth_equ is not None:
+            view_info["da360_depth"] = depth_equ.GetPerspective(hfov, yaw, pitch, slice_h, slice_w)
+            
+        views_data.append(view_info)
+
     # top view slice. It is a square.
     top_bottom_hfov = 100.0 
     top_bottom_focal_px = (slice_w / 2.0) / math.tan(math.radians(top_bottom_hfov) / 2.0)
     img_top = equ.GetPerspective(top_bottom_hfov, 0, 90, slice_w, slice_w)
     path_top = os.path.join(output_dir, f"{prefix}view_0_90.jpg")
     cv2.imwrite(path_top, img_top)
-    views_data.append({
+    
+    top_view_info = {
         "yaw": 0, "pitch": 90, 
         "path": path_top, "width": slice_w, "height": slice_w, "focal_px": top_bottom_focal_px, "hfov": top_bottom_hfov, "vfov": top_bottom_hfov,
-    })
+    }
+    if depth_equ is not None:
+        top_view_info["da360_depth"] = depth_equ.GetPerspective(top_bottom_hfov, 0, 90, slice_w, slice_w)
+    views_data.append(top_view_info)
 
     # bottom view slice 
-    # img_bottom = equ.GetPerspective(top_bottom_hfov, 0, -90, slice_w, slice_w)
-    # path_bottom = os.path.join(output_dir, "view_0_-90.jpg")
-    # cv2.imwrite(path_bottom, img_bottom)
-    # views_data.append({
-    #     "yaw": 0, "pitch": -90, 
-    #     "path": path_bottom, "width": slice_w, "height": slice_w, "focal_px": top_bottom_focal_px, "hfov": top_bottom_hfov, "vfov": top_bottom_hfov,
-    # })
+    img_bottom = equ.GetPerspective(top_bottom_hfov, 0, -90, slice_w, slice_w)
+    path_bottom = os.path.join(output_dir, f"{prefix}view_0_-90.jpg")
+    cv2.imwrite(path_bottom, img_bottom)
+    
+    bottom_view_info = {
+        "yaw": 0, "pitch": -90, 
+        "path": path_bottom, "width": slice_w, "height": slice_w, "focal_px": top_bottom_focal_px, "hfov": top_bottom_hfov, "vfov": top_bottom_hfov,
+    }
+    if depth_equ is not None:
+        bottom_view_info["da360_depth"] = depth_equ.GetPerspective(top_bottom_hfov, 0, -90, slice_w, slice_w)
+    views_data.append(bottom_view_info)
+    
     return views_data
 
 

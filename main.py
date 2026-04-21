@@ -32,11 +32,11 @@ if __name__ == '__main__':
             # Make sure models/DA360_large.pth exists, or modify to point to third_party/DA360/weights/...
             panorama_depth = get_da360_panorama_depth(pano_image, model_path="models/DA360_large.pth")
             
-        views_data = extract_views_for_depthmap(
+        views_data = extract_views(
             pano_image,
             output_dir,
-            slice_count=8,
-            overlap_degrees=45,
+            overlap_degrees=5,
+            slice_count=4,
             prefix=f"panorama_{i}_",
             panorama_depth=panorama_depth
         )
@@ -49,17 +49,17 @@ if __name__ == '__main__':
     os.makedirs(output_dir, exist_ok=True) 
     model_path = os.path.join(script_dir, "models", "sharp_2572gikvuh.pt")
     
-    # We will use the dense 8-slice extraction for EVERYTHING now (both DA3 and SHARP)
     test_views = depthmap_views_data[:1] 
     
-    # 1. SHARP generation on the 8 slices
+    # 1. SHARP generation of each view
     gaussian_list = extracted_views_to_3dgs(
         depthmap_views_data,
         model_path=model_path,
         output_dir=output_dir,
     )
 
-    # 2. Merge them WITHOUT Depth Anything alignment
+    # 2. === process splats ===
+    # process the splats without depth
     merged_splat_unaligned = process_splats(depthmap_views_data, gaussian_list, enable_alignment=False)
     unaligned_path = os.path.join(output_dir, "final_unaligned.ply")
     save_ply(
@@ -70,7 +70,7 @@ if __name__ == '__main__':
     )
     print(f"Saved unaligned splat to {unaligned_path}")
 
-    # 3. Merge them WITH Depth Anything alignment
+    # process splats with depth
     merged_splat_aligned = process_splats(depthmap_views_data, gaussian_list, enable_alignment=True)
     aligned_path = os.path.join(output_dir, "final_aligned.ply")
     save_ply(
