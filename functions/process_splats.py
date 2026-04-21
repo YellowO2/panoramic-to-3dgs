@@ -47,16 +47,44 @@ def filter_gaussians(gaussians: Gaussians3D, mask: torch.Tensor) -> Gaussians3D:
         opacities=gaussians.opacities[:, mask],
     )
 
-def align_splats(splats_list: list[Gaussians3D]) -> list[Gaussians3D]:
-    # optional step to further align the splats together, can be done by ICP or other point cloud registration methods.
-    # for simplicity, we will skip this step for now, but it can be implemented if needed.
+def align_splats_to_depthmap(splats_list: list[Gaussians3D], views: list) -> list[Gaussians3D]:
+    from functions.depth_align import get_da3_predictions, align_gaussians_to_reference
+    import torch
+    import numpy as np
+    
+    # 1. Extract paths and run inference
+    image_paths = [v["path"] for v in views]
+    prediction = get_da3_predictions(image_paths)
+    
+    aligned_splats = []
+    # prediction.depth shape: [N, H, W]
+    for i, (view, splat, depth_map) in enumerate(zip(views, splats_list, prediction.depth)):
+        focal_px = float(view["focal_px"])
+        img_w = int(view["width"])
+        img_h = int(view["height"])
+        
+        # 2. Align the current splat slice to the DA3 depth map
+        aligned_gaussians, median_scale, count = align_gaussians_to_reference(
+            gaussians=splat,
+            reference_depth_view=depth_map,
+            focal_x_px=focal_px,
+            focal_y_px=focal_px,  # SHARP uses uniform focal length typically
+            image_width=img_w,
+            image_height=img_h,
+            grid_resolution=8,
+            detail_weight=0.0
+        )
+        print(f"Aligned splat {i}/{len(views)} with DA3 - items checked: {count}, median scale ratio: {median_scale:.4f}")
+        aligned_splats.append(aligned_gaussians)
 
-    # method 1: naive approach of aligning the splat points to the point cloud using ICP?
+    return aligned_splats
 
-    return splats_list
-
-def process_splats(views: list, splats_list: list[Gaussians3D]) -> Gaussians3D:
+def process_splats(views: list, splats_list: list[Gaussians3D], enable_alignment: bool = True) -> Gaussians3D:
     # main orchestrator for post-processing the generated 3dgs slices.
+    
+    if enable_alignment:
+        print("Starting Depth Anything 3 multi-view alignment...")
+        splats_list = align_splats_to_depthmap(splats_list, views)
 
     processed_splats = []
     # splats and their corresponding view data

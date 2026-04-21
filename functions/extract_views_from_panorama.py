@@ -9,6 +9,7 @@ def extract_views(
     output_dir,
     overlap_degrees,
     slice_count=4,
+    prefix="",
 ):
     equ = E2P.Equirectangular(input_image)  # load panorama image
 
@@ -38,7 +39,7 @@ def extract_views(
         # yaw refers to horizontal axis. The max right is 180 and left -180.
         pitch = 0
         img = equ.GetPerspective(hfov, yaw, pitch, slice_h, slice_w)
-        output_path = os.path.join(output_dir, f"view_{int(round(yaw))}_{int(round(pitch))}.jpg")
+        output_path = os.path.join(output_dir, f"{prefix}view_{int(round(yaw))}_{int(round(pitch))}.jpg")
         cv2.imwrite(output_path, img)
 
         views_data.append(
@@ -57,7 +58,7 @@ def extract_views(
     top_bottom_hfov = 100.0 
     top_bottom_focal_px = (slice_w / 2.0) / math.tan(math.radians(top_bottom_hfov) / 2.0)
     img_top = equ.GetPerspective(top_bottom_hfov, 0, 90, slice_w, slice_w)
-    path_top = os.path.join(output_dir, "view_0_90.jpg")
+    path_top = os.path.join(output_dir, f"{prefix}view_0_90.jpg")
     cv2.imwrite(path_top, img_top)
     views_data.append({
         "yaw": 0, "pitch": 90, 
@@ -82,6 +83,7 @@ def extract_views_for_depthmap(
     output_dir,
     overlap_degrees,
     slice_count,
+    prefix="",
 ):
     equ = E2P.Equirectangular(input_image)  # load panorama image
 
@@ -109,7 +111,7 @@ def extract_views_for_depthmap(
     for pitch in pitch_values:
         for yaw in yaw_values:
             img = equ.GetPerspective(hfov, yaw, pitch, slice_h, slice_w)
-            output_path = os.path.join(output_dir, f"view_{int(round(yaw))}_{int(round(pitch))}.jpg")
+            output_path = os.path.join(output_dir, f"{prefix}_{int(round(yaw))}_{int(round(pitch))}.jpg")
             cv2.imwrite(output_path, img)
 
             views_data.append(
