@@ -12,7 +12,9 @@ if __name__ == '__main__':
     os.makedirs(output_dir, exist_ok=True) 
     
     panoramas = [
-        'panorama_1.347145_103.6917918.jpg',
+        # 'round1.jpg',
+        # 'round2.jpg',
+        'panorama_1.3430409_103.68296.jpg',
         # add more panoramas here
     ]
     
