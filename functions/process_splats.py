@@ -69,7 +69,7 @@ def align_splats_to_depthmap(splats_list: list[Gaussians3D], views: list) -> lis
         img_h = int(view["height"])
         
         # 2. Align the current splat slice to the DA3 depth map
-        aligned_gaussians, median_scale, count = align_gaussians_to_reference(
+        aligned_gaussians = align_gaussians_to_reference(
             gaussians=splat,
             reference_depth_view=depth_map,
             focal_x_px=focal_px,
@@ -79,7 +79,7 @@ def align_splats_to_depthmap(splats_list: list[Gaussians3D], views: list) -> lis
             grid_resolution=8,
             detail_weight=0.0
         )
-        print(f"Aligned splat {i}/{len(views)} with DA3 - items checked: {count}, median scale ratio: {median_scale:.4f}")
+        print(f"Aligned splat {i}/{len(views)} with DA3")
         aligned_splats.append(aligned_gaussians)
 
     return aligned_splats
