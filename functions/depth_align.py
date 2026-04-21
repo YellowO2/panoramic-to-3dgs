@@ -4,50 +4,17 @@ import cv2
 from sharp.utils.gaussians import Gaussians3D
 from depth_anything_3.api import DepthAnything3
 
-def get_da3_predictions(image_paths, model_type="./models/models--depth-anything--DA3NESTED-GIANT-LARGE-1.1/snapshots/b2359bdf726fb44ef62acca04d629dcf158053e7", device="cuda"):
+def get_da3_predictions(image_paths, export_dir=None, model_type="./models/models--depth-anything--DA3NESTED-GIANT-LARGE-1.1/snapshots/b2359bdf726fb44ef62acca04d629dcf158053e7", device="cuda"):
     print(f"Loading Depth Anything 3 model '{model_type}' on {device}...")
-    model = DepthAnything3.from_pretrained(model_type)
-    model = model.to(device=device)
+    model = DepthAnything3.from_pretrained(model_type).to(device=device)
     
     print(f"Running DA3 inference on {len(image_paths)} views...")
-    prediction = model.inference(image_paths)
+    if export_dir:
+        print(f"Exporting GLB to {export_dir}...")
+        prediction = model.inference(image_paths, export_dir=export_dir, export_format="glb")
+    else:
+        prediction = model.inference(image_paths)
     return prediction
-
-def save_depth_to_ply(depth_map, image_path, focal_px, output_path):
-    import cv2
-    import numpy as np
-    
-    # Load color image
-    color = cv2.imread(image_path)
-    color = cv2.cvtColor(color, cv2.COLOR_BGR2RGB)
-    h, w = depth_map.shape
-    
-    # Create pixel grid
-    y, x = np.meshgrid(np.arange(h), np.arange(w), indexing='ij')
-    
-    # Back-project to 3D
-    z = depth_map
-    x3d = (x - w/2) * z / focal_px
-    y3d = (y - h/2) * z / focal_px
-    
-    # Stack points
-    points = np.stack((x3d, y3d, z), axis=-1).reshape(-1, 3)
-    colors = color.reshape(-1, 3)
-    
-    # Filter out zero depth
-    valid = z.flatten() > 0
-    points = points[valid]
-    colors = colors[valid]
-    
-    # Save simple PLY format manually
-    with open(output_path, 'w') as f:
-        f.write("ply\nformat ascii 1.0\n")
-        f.write(f"element vertex {len(points)}\n")
-        f.write("property float x\nproperty float y\nproperty float z\n")
-        f.write("property uchar red\nproperty uchar green\nproperty uchar blue\n")
-        f.write("end_header\n")
-        for p, c in zip(points, colors):
-            f.write(f"{p[0]:.4f} {p[1]:.4f} {p[2]:.4f} {c[0]} {c[1]} {c[2]}\n")
 
 def bilinear_sample_scalar(image: np.ndarray, sample_x: np.ndarray, sample_y: np.ndarray) -> np.ndarray:
     """

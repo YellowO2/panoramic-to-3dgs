@@ -48,14 +48,18 @@ def filter_gaussians(gaussians: Gaussians3D, mask: torch.Tensor) -> Gaussians3D:
     )
 
 def align_splats_to_depthmap(splats_list: list[Gaussians3D], views: list) -> list[Gaussians3D]:
-    from functions.depth_align import get_da3_predictions, align_gaussians_to_reference, save_depth_to_ply
+    from functions.depth_align import get_da3_predictions, align_gaussians_to_reference
     import torch
     import numpy as np
+    import os
     
     # 1. Extract paths and run inference
     image_paths = [v["path"] for v in views]
-    prediction = get_da3_predictions(image_paths)
-    save_depth_to_ply(prediction.depth[0], image_paths[0], focal_px=views[0]["focal_px"], output_path="da3_depth.ply")
+    
+    debug_dir = "da3_debug_output"
+    os.makedirs(debug_dir, exist_ok=True)
+    
+    prediction = get_da3_predictions(image_paths, export_dir=debug_dir)
     
     aligned_splats = []
     # prediction.depth shape: [N, H, W]
