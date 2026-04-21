@@ -133,8 +133,10 @@ def align_gaussians_to_reference(
     mean_vectors = gaussians.mean_vectors  # (1, N, 3)
     mv_np = mean_vectors[0].detach().cpu().numpy().astype(np.float32)
     depth_z = mv_np[:, 2]
-    # Use Z depth scaling directly instead of radial depth, since we are doing Z depth ratio
-    # Alternatively you could use radial, but SHARP splat depths are usually encoded along Z.
+    
+    # Use radial depth (distance from camera center), not planar Z-depth.
+    # Panoramic models generate spherical radial distance for every pixel.
+    radial = np.linalg.norm(mv_np, axis=1)
     
     valid = depth_z > 1e-6
     pixel_x = (mv_np[:, 0] / np.clip(depth_z, 1e-6, None)) * focal_x_px + (image_width / 2.0) - 0.5
@@ -154,12 +156,14 @@ def align_gaussians_to_reference(
         # Note: DA360 generates depth directly, not disparity for us, because of the 1/disp inversion earlier
         ref_depth_sampled = reference_depth_view[py_int, px_int]
         
-        ok = np.isfinite(ref_depth_sampled) & (ref_depth_sampled > 1e-6) & (depth_z[valid] > 1e-6)
+        ok = np.isfinite(ref_depth_sampled) & (ref_depth_sampled > 1e-6) & (radial[valid] > 1e-6)
         count = int(ok.sum())
         if count >= 64:
             ref_depth_ok = ref_depth_sampled[ok].astype(np.float32)
-            sharp_z_ok = depth_z[valid][ok]
-            raw_scale = ref_depth_ok / sharp_z_ok
+            sharp_r_ok = radial[valid][ok]
+            
+            # The critical fix! We must compare DA360 radial depth to SHARP radial depth.
+            raw_scale = ref_depth_ok / sharp_r_ok
 
             # Global robust median for fallback and logging.
             lo, hi = np.quantile(raw_scale, [0.05, 0.95])
