@@ -2,6 +2,7 @@ import os
 from functions.sharp_infer import extracted_views_to_3dgs
 from functions.process_splats import process_splats
 from functions.extract_views_from_panorama import extract_views, extract_views_for_depthmap
+from functions.depth_align import get_da360_panorama_depth
 from sharp.utils.gaussians import save_ply
 
 
@@ -18,14 +19,26 @@ if __name__ == '__main__':
         # add more panoramas here
     ]
     
+    # Flag to toggle between DA3 and DA360 modes
+    use_da360 = True 
+
     depthmap_views_data = []
     for i, pano_image in enumerate(panoramas):
+        
+        panorama_depth = None
+        if use_da360:
+            print(f"Generating global depth map via DA360 for {pano_image}...")
+            # We'll use the default weights path for DA360. If you store it elsewhere, change this path.
+            # Make sure models/DA360_large.pth exists, or modify to point to third_party/DA360/weights/...
+            panorama_depth = get_da360_panorama_depth(pano_image, model_path="models/DA360_large.pth")
+            
         views_data = extract_views_for_depthmap(
             pano_image,
             output_dir,
             slice_count=8,
             overlap_degrees=45,
-            prefix=f"panorama_{i}_"
+            prefix=f"panorama_{i}_",
+            panorama_depth=panorama_depth
         )
         depthmap_views_data.extend(views_data)
         

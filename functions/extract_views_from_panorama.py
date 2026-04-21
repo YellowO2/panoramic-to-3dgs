@@ -84,8 +84,10 @@ def extract_views_for_depthmap(
     overlap_degrees,
     slice_count,
     prefix="",
+    panorama_depth=None,
 ):
     equ = E2P.Equirectangular(input_image)  # load panorama image
+    depth_equ = E2P.Equirectangular(panorama_depth) if panorama_depth is not None else None
 
     pano_h, pano_w = equ._img.shape[:2]
     slice_w = max(64, pano_w // slice_count)
@@ -114,16 +116,21 @@ def extract_views_for_depthmap(
             output_path = os.path.join(output_dir, f"{prefix}_{int(round(yaw))}_{int(round(pitch))}.jpg")
             cv2.imwrite(output_path, img)
 
-            views_data.append(
-                {
-                    "yaw": yaw,
-                    "pitch": pitch,
-                    "path": output_path,
-                    "width": slice_w,
-                    "height": slice_h,
-                    "focal_px": focal_px,
-                    "hfov": hfov,
-                    "vfov": vfov,
-                }
-            )
+            view_info = {
+                "yaw": yaw,
+                "pitch": pitch,
+                "path": output_path,
+                "width": slice_w,
+                "height": slice_h,
+                "focal_px": focal_px,
+                "hfov": hfov,
+                "vfov": vfov,
+            }
+            
+            if depth_equ is not None:
+                depth_slice = depth_equ.GetPerspective(hfov, yaw, pitch, slice_h, slice_w)
+                view_info["da360_depth"] = depth_slice
+                
+            views_data.append(view_info)
+            
     return views_data

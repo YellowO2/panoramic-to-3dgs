@@ -53,22 +53,30 @@ def align_splats_to_depthmap(splats_list: list[Gaussians3D], views: list) -> tup
     import numpy as np
     import os
     
-    # 1. Extract paths and run inference
-    image_paths = [v["path"] for v in views]
+    # 0. Check if we already have pre-computed DA360 depth maps in the views
+    use_da360 = all("da360_depth" in v for v in views)
     
-    debug_dir = "da3_debug_output"
-    os.makedirs(debug_dir, exist_ok=True)
-    
-    prediction = get_da3_predictions(image_paths, export_dir=debug_dir)
+    # 1. Extract paths and run inference if not using DA360
+    if not use_da360:
+        image_paths = [v["path"] for v in views]
+        debug_dir = "da3_debug_output"
+        os.makedirs(debug_dir, exist_ok=True)
+        prediction = get_da3_predictions(image_paths, export_dir=debug_dir)
+        depth_maps = prediction.depth
+        extrinsics = prediction.extrinsics
+    else:
+        print("Using DA360 provided depth maps for alignment.")
+        depth_maps = [v["da360_depth"] for v in views]
+        extrinsics = None # DA360 just does depth, not pose
     
     aligned_splats = []
     # prediction.depth shape: [N, H, W]
-    for i, (view, splat, depth_map) in enumerate(zip(views, splats_list, prediction.depth)):
+    for i, (view, splat, depth_map) in enumerate(zip(views, splats_list, depth_maps)):
         focal_px = float(view["focal_px"])
         img_w = int(view["width"])
         img_h = int(view["height"])
         
-        # 2. Align the current splat slice to the DA3 depth map
+        # 2. Align the current splat slice to the depth map
         aligned_gaussians = align_gaussians_to_reference(
             gaussians=splat,
             reference_depth_view=depth_map,
@@ -79,10 +87,10 @@ def align_splats_to_depthmap(splats_list: list[Gaussians3D], views: list) -> tup
             grid_resolution=8,
             detail_weight=0.0
         )
-        print(f"Aligned splat {i}/{len(views)} with DA3")
+        print(f"Aligned splat {i}/{len(views)} with Depth Map")
         aligned_splats.append(aligned_gaussians)
 
-    return aligned_splats, prediction.extrinsics
+    return aligned_splats, extrinsics
 
 def process_splats(views: list, splats_list: list[Gaussians3D], enable_alignment: bool = True) -> Gaussians3D:
     # main orchestrator for post-processing the generated 3dgs slices.
