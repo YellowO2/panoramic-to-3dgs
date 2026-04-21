@@ -28,9 +28,16 @@ def lonlat2XY(lonlat, shape):
     return out 
 
 class Equirectangular:
-    def __init__(self, img_name):
-        self._img = cv2.imread(img_name, cv2.IMREAD_COLOR)
-        [self._height, self._width, _] = self._img.shape
+    def __init__(self, img_data):
+        if isinstance(img_data, str):
+            self._img = cv2.imread(img_data, cv2.IMREAD_COLOR)
+        else:
+            self._img = img_data
+            
+        if len(self._img.shape) == 2:
+            self._height, self._width = self._img.shape
+        else:
+            self._height, self._width, _ = self._img.shape
         #cp = self._img.copy()  
         #w = self._width
         #self._img[:, :w/8, :] = cp[:, 7*w/8:, :]
