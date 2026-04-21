@@ -105,7 +105,7 @@ def process_splats(views: list, splats_list: list[Gaussians3D], enable_alignment
     for i, (view, splat_group) in enumerate(zip(views, splats_list)):
         
         # 1. trim away the noise splats edges for a clean cut.
-        hfov_keep = view["hfov"] - 8.0
+        hfov_keep = view["hfov"] - 6.0
         cleaned_splat = trim_splat_by_fov(splat_group, hfov_limit=hfov_keep)
         
         # 2. Translate and scaling / alignment

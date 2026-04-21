@@ -35,7 +35,7 @@ if __name__ == '__main__':
         views_data = extract_views(
             pano_image,
             output_dir,
-            overlap_degrees=5,
+            overlap_degrees=9,
             slice_count=4,
             prefix=f"panorama_{i}_",
             panorama_depth=panorama_depth
