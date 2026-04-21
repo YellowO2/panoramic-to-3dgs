@@ -32,8 +32,8 @@ def scale_splat_to_depthmap(gaussians: Gaussians3D, ref_depth_map: np.ndarray, f
     valid_py = py[valid].long().detach().cpu().numpy()
     
     # === 2. Obtain depthmap from DA3 ===
-    da3_z = ref_depth_map[valid_py, valid_px]
-    
+    ref_depth_map_resized = cv2.resize(ref_depth_map, (width, height), interpolation=cv2.INTER_LINEAR)
+    da3_z = ref_depth_map_resized[valid_py, valid_px]
     # === 3. Compute scale ratio ===
     ratios = da3_z / valid_z
     median_scale = float(np.median(ratios)) # we use median to reduce influence from outliers
