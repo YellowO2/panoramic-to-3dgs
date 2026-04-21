@@ -47,7 +47,7 @@ def filter_gaussians(gaussians: Gaussians3D, mask: torch.Tensor) -> Gaussians3D:
         opacities=gaussians.opacities[:, mask],
     )
 
-def align_splats_to_depthmap(splats_list: list[Gaussians3D], views: list) -> list[Gaussians3D]:
+def align_splats_to_depthmap(splats_list: list[Gaussians3D], views: list) -> tuple:
     from functions.depth_align import get_da3_predictions, align_gaussians_to_reference
     import torch
     import numpy as np
@@ -82,27 +82,47 @@ def align_splats_to_depthmap(splats_list: list[Gaussians3D], views: list) -> lis
         print(f"Aligned splat {i}/{len(views)} with DA3")
         aligned_splats.append(aligned_gaussians)
 
-    return aligned_splats
+    return aligned_splats, prediction.extrinsics
 
 def process_splats(views: list, splats_list: list[Gaussians3D], enable_alignment: bool = True) -> Gaussians3D:
     # main orchestrator for post-processing the generated 3dgs slices.
     
+    extrinsics = None
     if enable_alignment:
         print("Starting Depth Anything 3 multi-view alignment...")
-        splats_list = align_splats_to_depthmap(splats_list, views)
+        splats_list, extrinsics = align_splats_to_depthmap(splats_list, views)
 
     processed_splats = []
     # splats and their corresponding view data
-    for view, splat_group in zip(views, splats_list):
+    for i, (view, splat_group) in enumerate(zip(views, splats_list)):
         
         # 1. trim away the noise splats edges for a clean cut.
         hfov_keep = view["hfov"] - 8.0
         cleaned_splat = trim_splat_by_fov(splat_group, hfov_limit=hfov_keep)
         
-        # 2. rotate the splats to where they are supposed to be.
-        rotated_splat = rotate_splat(cleaned_splat, yaw=view["yaw"], pitch=view["pitch"])
+        # 2. Translate and scaling / alignment
+        if enable_alignment and extrinsics is not None:
+            # extrinsics is a stack of 3x4 W2C (World to Camera) matrices
+            w2c = extrinsics[i] # [3, 4] numpy array
+            
+            # We want to transform the splat from local camera space to a global world space
+            # So we need C2W (Camera to World) matrix, which is the inverse of W2C.
+            r_w2c = w2c[:, :3]
+            t_w2c = w2c[:, 3:]
+            
+            # Inverse of a rotation matrix is its transpose. Translation is -R^T * t
+            r_c2w = r_w2c.T
+            t_c2w = -r_c2w @ t_w2c
+            c2w = np.hstack((r_c2w, t_c2w))
+            
+            # Apply transformation
+            device = cleaned_splat.mean_vectors.device
+            c2w_tensor = torch.tensor(c2w, dtype=torch.float32, device=device)
+            rotated_splat = apply_transform(cleaned_splat, c2w_tensor)
+        else:
+            # 2. rotate the splats to where they are supposed to be manually (fallback).
+            rotated_splat = rotate_splat(cleaned_splat, yaw=view["yaw"], pitch=view["pitch"])
 
-        # TODO: Step 3. Translation scaling / alignment
         processed_splats.append(rotated_splat)
         
     return merge_gaussians(processed_splats)
