@@ -19,7 +19,7 @@ if __name__ == '__main__':
         # add more panoramas here
     ]
     
-    # Flag to toggle between DA3 and DA360 modes
+    # toggle between DA3 and DA360 modes
     use_da360 = True 
 
     depthmap_views_data = []
@@ -27,9 +27,7 @@ if __name__ == '__main__':
         
         panorama_depth = None
         if use_da360:
-            print(f"Generating global depth map via DA360 for {pano_image}...")
-            # We'll use the default weights path for DA360. If you store it elsewhere, change this path.
-            # Make sure models/DA360_large.pth exists, or modify to point to third_party/DA360/weights/...
+            print(f"generating depthmap using DA360 for {pano_image}...")
             panorama_depth = get_da360_panorama_depth(pano_image, model_path="models/DA360_large.pth")
             
         views_data = extract_views(
@@ -51,14 +49,14 @@ if __name__ == '__main__':
     
     test_views = depthmap_views_data[:1] 
     
-    # 1. SHARP generation of each view
+    # === SHARP generation of each view ===
     gaussian_list = extracted_views_to_3dgs(
         depthmap_views_data,
         model_path=model_path,
         output_dir=output_dir,
     )
 
-    # 2. === process splats ===
+    # === process splats generated ===
     # process the splats without depth
     merged_splat_unaligned = process_splats(depthmap_views_data, gaussian_list, enable_alignment=False)
     unaligned_path = os.path.join(output_dir, "final_unaligned.ply")
