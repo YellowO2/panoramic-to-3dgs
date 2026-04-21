@@ -2162,20 +2162,16 @@ def align_gaussians_to_reference(
 
     device = mean_vectors.device
     dtype = mean_vectors.dtype
-    scale_t = (
-        torch.from_numpy(per_point_scale)
-        .to(device=device, dtype=dtype)
-        .unsqueeze(0)
-        .unsqueeze(-1)
-    )  # (1, N, 1)
+    scale_t = torch.tensor([[[median_scale]]], device=device, dtype=dtype)
 
-    return Gaussians3D(
+    aligned_gaussians = Gaussians3D(
         mean_vectors=mean_vectors * scale_t,
         singular_values=gaussians.singular_values * scale_t,
         quaternions=gaussians.quaternions,
         colors=gaussians.colors,
         opacities=gaussians.opacities,
-    ), median_scale, count
+    )
+    return aligned_gaussians, median_scale, count
 
 
 def bilinear_sample(image: np.ndarray, sample_x: np.ndarray, sample_y: np.ndarray) -> np.ndarray:
