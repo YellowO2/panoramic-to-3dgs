@@ -89,7 +89,7 @@ def get_da360_panorama_depth(image_path: str, model_path: str = "models/DA360_la
         # Since depth is normalized (min=1.0), extreme points can shoot out to infinity.
         # Let's cap the depth to something much tighter (e.g., 3x the median depth of the scene)
         median_depth = np.median(debug_depth)
-        max_depth = median_depth * 3.0
+        max_depth = median_depth * 2.0
         mask = debug_depth < max_depth
         
         X_m, Y_m, Z_m = X[mask], Y[mask], Z[mask]
@@ -158,6 +158,27 @@ def scale_splat_to_depthmap(gaussians: Gaussians3D, ref_depth_map: np.ndarray, f
         colors=gaussians.colors,
         opacities=gaussians.opacities,
     )
+
+def bilinear_interpolate_grid(grid, all_px, all_py, cell_width, cell_height, grid_cells_x, grid_cells_y):
+    gx_cont = all_px / cell_width - 0.5
+    gy_cont = all_py / cell_height - 0.5
+    gx0 = np.clip(np.floor(gx_cont).astype(np.int32), 0, grid_cells_x - 1)
+    gy0 = np.clip(np.floor(gy_cont).astype(np.int32), 0, grid_cells_y - 1)
+    gx1 = np.clip(gx0 + 1, 0, grid_cells_x - 1)
+    gy1 = np.clip(gy0 + 1, 0, grid_cells_y - 1)
+    wx = np.clip(gx_cont - gx0, 0, 1).astype(np.float32)
+    wy = np.clip(gy_cont - gy0, 0, 1).astype(np.float32)
+    s00 = grid[gy0, gx0]
+    s01 = grid[gy0, gx1]
+    s10 = grid[gy1, gx0]
+    s11 = grid[gy1, gx1]
+    return (s00 * (1 - wx) * (1 - wy) + s01 * wx * (1 - wy) + 
+            s10 * (1 - wx) * wy + s11 * wx * wy)
+
+def nearest_neighbor_grid(grid, all_px, all_py, cell_width, cell_height, grid_cells_x, grid_cells_y):
+    gx_idx = np.clip(np.floor(all_px / cell_width).astype(np.int32), 0, grid_cells_x - 1)
+    gy_idx = np.clip(np.floor(all_py / cell_height).astype(np.int32), 0, grid_cells_y - 1)
+    return grid[gy_idx, gx_idx]
 
 def align_gaussians_to_reference(
     gaussians: Gaussians3D,
@@ -240,29 +261,13 @@ def align_gaussians_to_reference(
             # Clamp extreme cells relative to global median.
             grid = np.clip(grid, median_scale * 0.1, median_scale * 10.0)
 
-            # --- Interpolate coarse grid to every Gaussian ---
+            # --- Map every Gaussian to the grid ---
             all_px = np.clip(pixel_x, 0, image_width - 1)
             all_py = np.clip(pixel_y, 0, image_height - 1)
-            gx_cont = all_px / cell_width - 0.5
-            gy_cont = all_py / cell_height - 0.5
 
-            gx0 = np.clip(np.floor(gx_cont).astype(np.int32), 0, grid_cells_x - 1)
-            gy0 = np.clip(np.floor(gy_cont).astype(np.int32), 0, grid_cells_y - 1)
-            gx1 = np.clip(gx0 + 1, 0, grid_cells_x - 1)
-            gy1 = np.clip(gy0 + 1, 0, grid_cells_y - 1)
-            wx = np.clip(gx_cont - gx0, 0, 1).astype(np.float32)
-            wy = np.clip(gy_cont - gy0, 0, 1).astype(np.float32)
-
-            s00 = grid[gy0, gx0]
-            s01 = grid[gy0, gx1]
-            s10 = grid[gy1, gx0]
-            s11 = grid[gy1, gx1]
-            smooth_scale = (
-                s00 * (1 - wx) * (1 - wy)
-                + s01 * wx * (1 - wy)
-                + s10 * (1 - wx) * wy
-                + s11 * wx * wy
-            )
+            # projection type
+            # smooth_scale = bilinear_interpolate_grid(grid, all_px, all_py, cell_width, cell_height, grid_cells_x, grid_cells_y)
+            smooth_scale = nearest_neighbor_grid(grid, all_px, all_py, cell_width, cell_height, grid_cells_x, grid_cells_y)
 
             # Blend smooth grid scale with per-point raw scale.
             dw = float(np.clip(detail_weight, 0.0, 1.0))
