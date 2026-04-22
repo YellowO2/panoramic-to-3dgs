@@ -85,8 +85,13 @@ def get_da360_panorama_depth(image_path: str, model_path: str = "models/DA360_la
         Y = debug_depth * np.cos(Theta)
         Z = debug_depth * np.sin(Theta) * np.cos(Phi)
         
-        # Mask out background/sky (usually extreme depths > some threshold)
-        mask = debug_depth < 200.0
+        # Mask out extreme background/sky distances that blow up the viewer's bounding box
+        # Since depth is normalized (min=1.0), extreme points can shoot out to infinity.
+        # Let's cap the depth to something much tighter (e.g., 3x the median depth of the scene)
+        median_depth = np.median(debug_depth)
+        max_depth = median_depth * 3.0
+        mask = debug_depth < max_depth
+        
         X_m, Y_m, Z_m = X[mask], Y[mask], Z[mask]
         R_m, G_m, B_m = debug_rgb[:, :, 0][mask], debug_rgb[:, :, 1][mask], debug_rgb[:, :, 2][mask]
         
