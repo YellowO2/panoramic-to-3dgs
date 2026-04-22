@@ -4,9 +4,10 @@ import cv2
 from sharp.utils.gaussians import Gaussians3D
 from depth_anything_3.api import DepthAnything3
 
-def get_da360_panorama_depth(image_path: str, model_path: str = "models/DA360_large.pth", device: str = "cuda"):
+def get_da360_panorama_depth(image_path: str, model_path: str = "models/DA360_large.pth", device: str = "cuda", save_debug_ply: str = None):
     """
     Loads DA360 and generates a full equirectangular depth map from the panorama.
+    If save_debug_ply is provided (e.g. "debug_da360.ply"), a point cloud will be saved.
     """
     print(f"Loading DA360 model from '{model_path}' on {device}...")
     
@@ -62,6 +63,39 @@ def get_da360_panorama_depth(image_path: str, model_path: str = "models/DA360_la
     # 5. Resize back exactly to the panoramas original resolution
     pred_depth = cv2.resize(pred_depth, (original_w, original_h), interpolation=cv2.INTER_LINEAR)
     
+    if save_debug_ply is not None:
+        print(f"Saving debug point cloud to {save_debug_ply}...")
+        # Create full spherical mesh from the prediction
+        h, w = pred_depth.shape
+        Theta = np.pi - np.arange(h).reshape(h, 1) * np.pi / h - np.pi / (2 * h)
+        Theta = np.repeat(Theta, w, axis=1)
+        Phi = np.arange(w).reshape(1, w) * 2 * np.pi / w + np.pi / w - np.pi
+        Phi = np.repeat(Phi, h, axis=0)
+
+        # Spherical offset back to cartesian (Open3D standard mapping used in DA360 test.py)
+        X = pred_depth * np.sin(Theta) * np.sin(Phi)
+        Y = pred_depth * np.cos(Theta)
+        Z = pred_depth * np.sin(Theta) * np.cos(Phi)
+        
+        # Mask out background/sky (usually extreme depths > some threshold, DA360 test uses 200)
+        mask = pred_depth < 200.0
+        X_m, Y_m, Z_m = X[mask], Y[mask], Z[mask]
+        R_m, G_m, B_m = img_rgb[:, :, 0][mask], img_rgb[:, :, 1][mask], img_rgb[:, :, 2][mask]
+        
+        # Save as fast binary PLY
+        vertex = np.empty(X_m.shape[0], dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4'), 
+                                              ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')])
+        vertex['x'], vertex['y'], vertex['z'] = X_m, Y_m, Z_m
+        vertex['red'], vertex['green'], vertex['blue'] = R_m, G_m, B_m
+        
+        with open(save_debug_ply, 'wb') as f:
+            f.write(b"ply\nformat binary_little_endian 1.0\n")
+            f.write(f"element vertex {len(vertex)}\n".encode('ascii'))
+            f.write(b"property float x\nproperty float y\nproperty float z\n")
+            f.write(b"property uchar red\nproperty uchar green\nproperty uchar blue\n")
+            f.write(b"end_header\n")
+            f.write(vertex.tobytes())
+
     del model, outputs, normalized_rgb
     torch.cuda.empty_cache()
     

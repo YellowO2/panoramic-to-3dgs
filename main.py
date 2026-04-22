@@ -28,7 +28,7 @@ if __name__ == '__main__':
         panorama_depth = None
         if use_da360:
             print(f"generating depthmap using DA360 for {pano_image}...")
-            panorama_depth = get_da360_panorama_depth(pano_image, model_path="models/DA360_large.pth")
+            panorama_depth = get_da360_panorama_depth(pano_image, model_path="models/DA360_large.pth", save_debug_ply="debug_da360.ply")
             
         views_data = extract_views(
             pano_image,
