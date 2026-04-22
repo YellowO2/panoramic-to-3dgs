@@ -65,22 +65,30 @@ def get_da360_panorama_depth(image_path: str, model_path: str = "models/DA360_la
     
     if save_debug_ply is not None:
         print(f"Saving debug point cloud to {save_debug_ply}...")
+        
+        # Subsample for the debug point cloud to avoid massive file sizes (max width 1024)
+        debug_w = min(1024, original_w)
+        debug_h = int(original_h * (debug_w / original_w))
+        
+        debug_depth = cv2.resize(pred_depth, (debug_w, debug_h), interpolation=cv2.INTER_NEAREST)
+        debug_rgb = cv2.resize(img_rgb, (debug_w, debug_h), interpolation=cv2.INTER_LINEAR)
+
         # Create full spherical mesh from the prediction
-        h, w = pred_depth.shape
+        h, w = debug_depth.shape
         Theta = np.pi - np.arange(h).reshape(h, 1) * np.pi / h - np.pi / (2 * h)
         Theta = np.repeat(Theta, w, axis=1)
         Phi = np.arange(w).reshape(1, w) * 2 * np.pi / w + np.pi / w - np.pi
         Phi = np.repeat(Phi, h, axis=0)
 
-        # Spherical offset back to cartesian (Open3D standard mapping used in DA360 test.py)
-        X = pred_depth * np.sin(Theta) * np.sin(Phi)
-        Y = pred_depth * np.cos(Theta)
-        Z = pred_depth * np.sin(Theta) * np.cos(Phi)
+        # Spherical offset back to cartesian
+        X = debug_depth * np.sin(Theta) * np.sin(Phi)
+        Y = debug_depth * np.cos(Theta)
+        Z = debug_depth * np.sin(Theta) * np.cos(Phi)
         
-        # Mask out background/sky (usually extreme depths > some threshold, DA360 test uses 200)
-        mask = pred_depth < 200.0
+        # Mask out background/sky (usually extreme depths > some threshold)
+        mask = debug_depth < 200.0
         X_m, Y_m, Z_m = X[mask], Y[mask], Z[mask]
-        R_m, G_m, B_m = img_rgb[:, :, 0][mask], img_rgb[:, :, 1][mask], img_rgb[:, :, 2][mask]
+        R_m, G_m, B_m = debug_rgb[:, :, 0][mask], debug_rgb[:, :, 1][mask], debug_rgb[:, :, 2][mask]
         
         # Save as fast binary PLY
         vertex = np.empty(X_m.shape[0], dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4'), 
