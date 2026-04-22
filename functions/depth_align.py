@@ -90,19 +90,16 @@ def get_da360_panorama_depth(image_path: str, model_path: str = "models/DA360_la
         X_m, Y_m, Z_m = X[mask], Y[mask], Z[mask]
         R_m, G_m, B_m = debug_rgb[:, :, 0][mask], debug_rgb[:, :, 1][mask], debug_rgb[:, :, 2][mask]
         
-        # Save as fast binary PLY
-        vertex = np.empty(X_m.shape[0], dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4'), 
-                                              ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')])
-        vertex['x'], vertex['y'], vertex['z'] = X_m, Y_m, Z_m
-        vertex['red'], vertex['green'], vertex['blue'] = R_m, G_m, B_m
+        # Format the coordinates as standard Open3D structures
+        import open3d as o3d
+        points = np.stack([X_m, Y_m, Z_m], axis=1)
+        colors = np.stack([R_m, G_m, B_m], axis=1) / 255.0  # Open3D colors must be 0-1 floats
         
-        with open(save_debug_ply, 'wb') as f:
-            f.write(b"ply\nformat binary_little_endian 1.0\n")
-            f.write(f"element vertex {len(vertex)}\n".encode('ascii'))
-            f.write(b"property float x\nproperty float y\nproperty float z\n")
-            f.write(b"property uchar red\nproperty uchar green\nproperty uchar blue\n")
-            f.write(b"end_header\n")
-            f.write(vertex.tobytes())
+        # Create and save a strict standard PLY format that web viewers can read safely
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(points)
+        pcd.colors = o3d.utility.Vector3dVector(colors)
+        o3d.io.write_point_cloud(save_debug_ply, pcd)
 
     del model, outputs, normalized_rgb
     torch.cuda.empty_cache()
