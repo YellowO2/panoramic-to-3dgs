@@ -58,15 +58,15 @@ if __name__ == '__main__':
 
     # === process splats generated ===
     # process the splats without depth
-    merged_splat_unaligned = process_splats(depthmap_views_data, gaussian_list, enable_alignment=False)
-    unaligned_path = os.path.join(output_dir, "final_unaligned.ply")
-    save_ply(
-        merged_splat_unaligned, 
-        f_px=test_views[0]["focal_px"], 
-        image_shape=(test_views[0]["height"], test_views[0]["width"]), 
-        path=unaligned_path
-    )
-    print(f"Saved unaligned splat to {unaligned_path}")
+    # merged_splat_unaligned = process_splats(depthmap_views_data, gaussian_list, enable_alignment=False)
+    # unaligned_path = os.path.join(output_dir, "final_unaligned.ply")
+    # save_ply(
+    #     merged_splat_unaligned, 
+    #     f_px=test_views[0]["focal_px"], 
+    #     image_shape=(test_views[0]["height"], test_views[0]["width"]), 
+    #     path=unaligned_path
+    # )
+    # print(f"Saved unaligned splat to {unaligned_path}")
 
     # process splats with depth
     merged_splat_aligned = process_splats(depthmap_views_data, gaussian_list, enable_alignment=True)
