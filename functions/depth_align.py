@@ -266,8 +266,8 @@ def align_gaussians_to_reference(
             all_py = np.clip(pixel_y, 0, image_height - 1)
 
             # projection type
-            # smooth_scale = bilinear_interpolate_grid(grid, all_px, all_py, cell_width, cell_height, grid_cells_x, grid_cells_y)
-            smooth_scale = nearest_neighbor_grid(grid, all_px, all_py, cell_width, cell_height, grid_cells_x, grid_cells_y)
+            smooth_scale = bilinear_interpolate_grid(grid, all_px, all_py, cell_width, cell_height, grid_cells_x, grid_cells_y)
+            # smooth_scale = nearest_neighbor_grid(grid, all_px, all_py, cell_width, cell_height, grid_cells_x, grid_cells_y)
 
             # Blend smooth grid scale with per-point raw scale.
             dw = float(np.clip(detail_weight, 0.0, 1.0))
