@@ -72,8 +72,8 @@ if __name__ == '__main__':
     aligned_path = os.path.join(output_dir, "final_aligned.ply")
     save_ply(
         merged_splat_aligned, 
-        f_px=test_views[0]["focal_px"], 
-        image_shape=(test_views[0]["height"], test_views[0]["width"]), 
+        f_px=test_views[0].focal_px, 
+        image_shape=(test_views[0].height, test_views[0].width), 
         path=aligned_path
     )
     print(f"Saved DA3-aligned splat to {aligned_path}")
