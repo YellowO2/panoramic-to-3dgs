@@ -33,7 +33,7 @@ def extract_views(
 
     yaw_values = [(span_degrees * i) for i in range(slice_count)] # step through the size of a slice without overlaps.
 
-    views_data = []
+    views_data: list[View] = []
 
     # generate the side slices first.
     for yaw in yaw_values:
@@ -57,7 +57,7 @@ def extract_views(
         )
         
         if depth_equ is not None:
-            view_info["da360_depth"] = depth_equ.GetPerspective(hfov, yaw, pitch, slice_h, slice_w)
+            view_info.da360_depth = depth_equ.GetPerspective(hfov, yaw, pitch, slice_h, slice_w)
             
         views_data.append(view_info)
 

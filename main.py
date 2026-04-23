@@ -9,13 +9,13 @@ from sharp.utils.gaussians import save_ply
 
 
 if __name__ == '__main__':
-    output_dir = 'output_views'
+    output_dir = 'data/output_views'
     os.makedirs(output_dir, exist_ok=True) 
     
     panoramas = [
         # 'round1.jpg',
         # 'round2.jpg',
-        'cleaned_test_output.png',
+        'data/inputs/cleaned_test_output.png',
         # add more panoramas here
     ]
     
@@ -28,7 +28,7 @@ if __name__ == '__main__':
         panorama_depth = None
         if use_da360:
             print(f"generating depthmap using DA360 for {pano_image}...")
-            panorama_depth = get_da360_panorama_depth(pano_image, model_path="models/DA360_large.pth", save_debug_ply="debug_da360.ply")
+            panorama_depth = get_da360_panorama_depth(pano_image, model_path="models/DA360_large.pth", save_debug_ply="data/outputs/debug_da360.ply")
             
         views_data = extract_views(
             pano_image,
@@ -43,7 +43,7 @@ if __name__ == '__main__':
     print("finish 1")
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    output_dir = 'output_3dgs'
+    output_dir = 'data/output_3dgs'
     os.makedirs(output_dir, exist_ok=True) 
     model_path = os.path.join(script_dir, "models", "sharp_2572gikvuh.pt")
     
