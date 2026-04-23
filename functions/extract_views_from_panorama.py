@@ -2,6 +2,7 @@ import os
 import cv2 
 import math
 from functions import Equirec2Perspec as E2P 
+from datatype import View
 
 # cuts the panoramic into correct inputs for MLsharp
 def extract_views(
@@ -11,7 +12,7 @@ def extract_views(
     slice_count=4,
     prefix="",
     panorama_depth=None,
-):
+) -> list[View]:
     equ = E2P.Equirectangular(input_image)  # load panorama image
     depth_equ = E2P.Equirectangular(panorama_depth) if panorama_depth is not None else None
 
@@ -44,16 +45,16 @@ def extract_views(
         output_path = os.path.join(output_dir, f"{prefix}view_{int(round(yaw))}_{int(round(pitch))}.jpg")
         cv2.imwrite(output_path, img)
 
-        view_info = {
-            "yaw": yaw,
-            "pitch": pitch,
-            "path": output_path,
-            "width": slice_w,
-            "height": slice_h,
-            "focal_px": focal_px,
-            "hfov": hfov,
-            "vfov": vfov,
-        }
+        view_info = View(
+            yaw=yaw,
+            pitch=pitch,
+            path=output_path,
+            width=slice_w,
+            height=slice_h,
+            focal_px=focal_px,
+            hfov=hfov,
+            vfov=vfov,
+        )
         
         if depth_equ is not None:
             view_info["da360_depth"] = depth_equ.GetPerspective(hfov, yaw, pitch, slice_h, slice_w)

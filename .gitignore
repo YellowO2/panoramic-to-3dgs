@@ -4,3 +4,4 @@ __pycache__
 .ds_store
 ignore
 Depth-Anything-3
+data/outputs

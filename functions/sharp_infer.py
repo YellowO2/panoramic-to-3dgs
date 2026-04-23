@@ -4,6 +4,7 @@ import torch
 from sharp.cli.predict import predict_image
 from sharp.models import PredictorParams, create_predictor
 from sharp.utils.gaussians import save_ply
+from datatype import View
 
 # check for cpu or cuda to use
 def _resolve_device(device: str = None):
@@ -24,7 +25,7 @@ def load_sharp_predictor(model_path: str, device: str = None):
 
 # a wrapper around SHARP functions that turns extracted views into 3DGS.
 def extracted_views_to_3dgs(
-    extracted_views,
+    extracted_views: list[View],
     *,
     model_path: str,
     output_dir: str,

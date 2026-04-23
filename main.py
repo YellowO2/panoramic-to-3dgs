@@ -22,7 +22,7 @@ if __name__ == '__main__':
     # toggle between DA3 and DA360 modes
     use_da360 = True 
 
-    depthmap_views_data = []
+    views_data = []
     for i, pano_image in enumerate(panoramas):
         
         panorama_depth = None
@@ -38,7 +38,7 @@ if __name__ == '__main__':
             prefix=f"panorama_{i}_",
             panorama_depth=panorama_depth
         )
-        depthmap_views_data.extend(views_data)
+        views_data.extend(views_data)
         
     print("finish 1")
 
@@ -47,11 +47,11 @@ if __name__ == '__main__':
     os.makedirs(output_dir, exist_ok=True) 
     model_path = os.path.join(script_dir, "models", "sharp_2572gikvuh.pt")
     
-    test_views = depthmap_views_data[:1] 
+    test_views = views_data[:1] 
     
     # === SHARP generation of each view ===
     gaussian_list = extracted_views_to_3dgs(
-        depthmap_views_data,
+        views_data,
         model_path=model_path,
         output_dir=output_dir,
     )
@@ -59,17 +59,16 @@ if __name__ == '__main__':
     # === process splats generated ===
     # process the splats without depth
     # merged_splat_unaligned = process_splats(depthmap_views_data, gaussian_list, enable_alignment=False)
-    # unaligned_path = os.path.join(output_dir, "final_unaligned.ply")
     # save_ply(
     #     merged_splat_unaligned, 
     #     f_px=test_views[0]["focal_px"], 
     #     image_shape=(test_views[0]["height"], test_views[0]["width"]), 
-    #     path=unaligned_path
+    #     path=os.path.join(output_dir, "final_unaligned.ply")
     # )
     # print(f"Saved unaligned splat to {unaligned_path}")
 
     # process splats with depth
-    merged_splat_aligned = process_splats(depthmap_views_data, gaussian_list, enable_alignment=True)
+    merged_splat_aligned = process_splats(views_data, gaussian_list, enable_alignment=True)
     aligned_path = os.path.join(output_dir, "final_aligned.ply")
     save_ply(
         merged_splat_aligned, 
