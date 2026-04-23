@@ -5,6 +5,8 @@ import math
 from scipy.spatial.transform import Rotation
 from sharp.utils.gaussians import Gaussians3D, apply_transform
 
+from datatype import View
+
 
 def trim_splat_by_fov(gaussians: Gaussians3D, hfov_limit: float, vfov_limit: float = None) -> Gaussians3D:
     # this function trims away dirty edges of the splat for a clean cut.
@@ -47,18 +49,18 @@ def filter_gaussians(gaussians: Gaussians3D, mask: torch.Tensor) -> Gaussians3D:
         opacities=gaussians.opacities[:, mask],
     )
 
-def align_splats_to_depthmap(splats_list: list[Gaussians3D], views: list) -> tuple:
+def align_splats_to_depthmap(splats_list: list[Gaussians3D], views: list[View]) -> tuple:
     from functions.depth_align import get_da3_predictions, align_gaussians_to_reference
     import torch
     import numpy as np
     import os
     
     # 0. Check if we already have pre-computed DA360 depth maps in the views
-    use_da360 = all("da360_depth" in v for v in views)
+    use_da360 = all(v.da360_depth is not None for v in views)
     
     # 1. Extract paths and run inference if not using DA360
     if not use_da360:
-        image_paths = [v["path"] for v in views]
+        image_paths = [v.path for v in views]
         debug_dir = "da3_debug_output"
         os.makedirs(debug_dir, exist_ok=True)
         prediction = get_da3_predictions(image_paths, export_dir=debug_dir)
@@ -66,16 +68,16 @@ def align_splats_to_depthmap(splats_list: list[Gaussians3D], views: list) -> tup
         extrinsics = prediction.extrinsics
     else:
         print("Using DA360 provided depth maps for alignment.")
-        depth_maps = [v["da360_depth"] for v in views]
+        depth_maps = [v.da360_depth for v in views]
         extrinsics = None # DA360 just does depth, not pose
     
     aligned_splats = []
     # prediction.depth shape: [N, H, W]
     for i, (view, splat, depth_map) in enumerate(zip(views, splats_list, depth_maps)):
-        focal_px = float(view["focal_px"])
-        img_w = int(view["width"])
-        img_h = int(view["height"])
-        
+        focal_px = float(view.focal_px)
+        img_w = int(view.width)
+        img_h = int(view.height)
+
         # 2. Align the current splat slice to the depth map
         aligned_gaussians = align_gaussians_to_reference(
             gaussians=splat,
@@ -92,7 +94,7 @@ def align_splats_to_depthmap(splats_list: list[Gaussians3D], views: list) -> tup
 
     return aligned_splats, extrinsics
 
-def process_splats(views: list, splats_list: list[Gaussians3D], enable_alignment: bool = True) -> Gaussians3D:
+def process_splats(views: list[View], splats_list: list[Gaussians3D], enable_alignment: bool = True) -> Gaussians3D:
     # main orchestrator for post-processing the generated 3dgs slices.
     
     extrinsics = None
@@ -105,7 +107,7 @@ def process_splats(views: list, splats_list: list[Gaussians3D], enable_alignment
     for i, (view, splat_group) in enumerate(zip(views, splats_list)):
         
         # 1. trim away the noise splats edges for a clean cut.
-        hfov_keep = view["hfov"] - 6.0
+        hfov_keep = view.hfov - 6.0
         cleaned_splat = trim_splat_by_fov(splat_group, hfov_limit=hfov_keep)
         
         # 2. Translate and scaling / alignment
@@ -129,7 +131,7 @@ def process_splats(views: list, splats_list: list[Gaussians3D], enable_alignment
             rotated_splat = apply_transform(cleaned_splat, c2w_tensor)
         else:
             # 2. rotate the splats to where they are supposed to be manually (fallback).
-            rotated_splat = rotate_splat(cleaned_splat, yaw=view["yaw"], pitch=view["pitch"])
+            rotated_splat = rotate_splat(cleaned_splat, yaw=view.yaw, pitch=view.pitch)
 
         processed_splats.append(rotated_splat)
         

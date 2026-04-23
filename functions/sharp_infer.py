@@ -39,20 +39,17 @@ def extracted_views_to_3dgs(
     gaussian_list = []
 
     for v in extracted_views:
-        img_bgr = cv2.imread(v["path"], cv2.IMREAD_COLOR)
-        if img_bgr is None:
-            raise RuntimeError(f"Failed to read image: {v['path']}")
-
+        img_bgr = cv2.imread(v.path, cv2.IMREAD_COLOR)
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
         
-        current_focal_px = float(v["focal_px"])
+        current_focal_px = float(v.focal_px)
         gaussians = predict_image(predictor, img_rgb, current_focal_px, device_obj)
 
         ply_path = os.path.join(
             ply_dir,
-            f"view_{int(round(v['yaw']))}_{int(round(v['pitch']))}.ply",
+            f"view_{int(round(v.yaw))}_{int(round(v.pitch))}.ply",
         )
-        save_ply(gaussians, current_focal_px, (v["height"], v["width"]), ply_path)
+        save_ply(gaussians, current_focal_px, (v.height, v.width), ply_path)
         gaussian_list.append(gaussians)
     
     return gaussian_list

@@ -68,12 +68,18 @@ def extract_views(
     path_top = os.path.join(output_dir, f"{prefix}view_0_90.jpg")
     cv2.imwrite(path_top, img_top)
     
-    top_view_info = {
-        "yaw": 0, "pitch": 90, 
-        "path": path_top, "width": slice_w, "height": slice_w, "focal_px": top_bottom_focal_px, "hfov": top_bottom_hfov, "vfov": top_bottom_hfov,
-    }
+    top_view_info = View(
+        yaw=0,
+        pitch=90,
+        path=path_top,
+        width=slice_w,
+        height=slice_w,
+        focal_px=top_bottom_focal_px,
+        hfov=top_bottom_hfov,
+        vfov=top_bottom_hfov,
+    )
     if depth_equ is not None:
-        top_view_info["da360_depth"] = depth_equ.GetPerspective(top_bottom_hfov, 0, 90, slice_w, slice_w)
+        top_view_info.da360_depth = depth_equ.GetPerspective(top_bottom_hfov, 0, 90, slice_w, slice_w)
     views_data.append(top_view_info)
 
     # bottom view slice 
@@ -81,19 +87,25 @@ def extract_views(
     path_bottom = os.path.join(output_dir, f"{prefix}view_0_-90.jpg")
     cv2.imwrite(path_bottom, img_bottom)
     
-    bottom_view_info = {
-        "yaw": 0, "pitch": -90, 
-        "path": path_bottom, "width": slice_w, "height": slice_w, "focal_px": top_bottom_focal_px, "hfov": top_bottom_hfov, "vfov": top_bottom_hfov,
-    }
+    bottom_view_info = View(
+        yaw=0,
+        pitch=-90,
+        path=path_bottom,
+        width=slice_w,
+        height=slice_w,
+        focal_px=top_bottom_focal_px,
+        hfov=top_bottom_hfov,
+        vfov=top_bottom_hfov,
+    )
     if depth_equ is not None:
-        bottom_view_info["da360_depth"] = depth_equ.GetPerspective(top_bottom_hfov, 0, -90, slice_w, slice_w)
+        bottom_view_info.da360_depth = depth_equ.GetPerspective(top_bottom_hfov, 0, -90, slice_w, slice_w)
     views_data.append(bottom_view_info)
     
     return views_data
 
 
 
-# this is the same as above except it has high overlap degree and has slice for verticle fov.
+# this is the same as aboves except it has high overlap degree and has slice for verticle fov.
 def extract_views_for_depthmap(
     input_image,
     output_dir,
@@ -132,20 +144,20 @@ def extract_views_for_depthmap(
             output_path = os.path.join(output_dir, f"{prefix}_{int(round(yaw))}_{int(round(pitch))}.jpg")
             cv2.imwrite(output_path, img)
 
-            view_info = {
-                "yaw": yaw,
-                "pitch": pitch,
-                "path": output_path,
-                "width": slice_w,
-                "height": slice_h,
-                "focal_px": focal_px,
-                "hfov": hfov,
-                "vfov": vfov,
-            }
+            view_info = View(
+                yaw=yaw,
+                pitch=pitch,
+                path=output_path,
+                width=slice_w,
+                height=slice_h,
+                focal_px=focal_px,
+                hfov=hfov,
+                vfov=vfov,
+            )
             
             if depth_equ is not None:
                 depth_slice = depth_equ.GetPerspective(hfov, yaw, pitch, slice_h, slice_w)
-                view_info["da360_depth"] = depth_slice
+                view_info.da360_depth = depth_slice
                 
             views_data.append(view_info)
             
