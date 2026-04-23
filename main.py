@@ -15,7 +15,7 @@ if __name__ == '__main__':
     panoramas = [
         # 'round1.jpg',
         # 'round2.jpg',
-        'panorama_1.3430409_103.68296.jpg',
+        'cleaned_test_output.png',
         # add more panoramas here
     ]
     

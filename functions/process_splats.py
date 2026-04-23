@@ -84,7 +84,7 @@ def align_splats_to_depthmap(splats_list: list[Gaussians3D], views: list) -> tup
             focal_y_px=focal_px,  # SHARP uses uniform focal length typically
             image_width=img_w,
             image_height=img_h,
-            grid_resolution=min(img_w, img_h) // 2,  # default 8
+            grid_resolution=8,  # default 8
             detail_weight=0.0
         )
         print(f"Aligned splat {i}/{len(views)} with Depth Map")
