@@ -44,11 +44,7 @@ class DA360(nn.Module):
         }
         
         self.depth_anything = DepthAnythingV2(**model_configs[self.dinov2_encoder])
-        if os.path.exists(f'/home/jianghualie/checkpoints/depth_anything_v2_{dinov2_encoder}.pth'):
-            self.depth_anything.load_state_dict(
-                torch.load(f'/home/jianghualie/checkpoints/depth_anything_v2_{dinov2_encoder}.pth', map_location='cpu'))
-        else:
-            print(f'pretrained model is not available.')
+        # Note: Weights are loaded externally in DA360DepthModel.py
         
         if "vit" in frozen:
             for param in self.depth_anything.pretrained.parameters():
@@ -71,7 +67,7 @@ class DA360(nn.Module):
 
     def forward(self, input_equi_image):
         
-        with autocast(enabled=self.mixed_precision):
+        with autocast(enabled=self.mixed_precision, device_type="cuda"):
             ssidisp, cls_token = self.depth_anything(input_equi_image, return_cls_token=True)
         
         shift = self.shift_mlp(cls_token).unsqueeze(-1).unsqueeze(-1)+self.eps
