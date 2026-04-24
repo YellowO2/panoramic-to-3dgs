@@ -6,7 +6,7 @@ from sharp.models import PredictorParams, create_predictor
 from sharp.utils.gaussians import save_ply
 from datatype import View
 
-class GS3DGenerator:
+class SplatGenerator:
     def __init__(self, model_path: str, device: str = None):
         self.device = self._resolve_device(device)
         self.predictor = self._load_sharp_predictor(model_path)

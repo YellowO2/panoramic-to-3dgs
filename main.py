@@ -1,6 +1,6 @@
 import os
 import torch
-from components.SplatGenerator.GS3DGenerator import GS3DGenerator
+from components.SplatGenerator.SplatGenerator import SplatGenerator
 from components.DepthMapGenerator.DA360DepthModel import DA360DepthModel
 from components.ImageCleaner.ImageCleaner import ImageCleaner
 from functions.extract_views_from_panorama import extract_views
@@ -51,7 +51,7 @@ def run_panoramic_pipeline(
 
     # 4. Generate 3DGS
     print("--- Step: 3DGS Generation (SHARP) ---")
-    gs_generator = GS3DGenerator(model_paths['sharp'])
+    gs_generator = SplatGenerator(model_paths['sharp'])
     gs_output_dir = os.path.join(output_dir, "gs")
     gaussian_list = gs_generator.generate_from_views(views_data, output_dir=gs_output_dir)
 
