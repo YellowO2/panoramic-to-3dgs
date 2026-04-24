@@ -1,7 +1,7 @@
 import os
 import cv2 
 import math
-import Equirec2Perspec as E2P 
+from components.ViewExtractor import Equirec2Perspec as E2P
 from datatype import View
 
 def _save_view(equ, depth_equ, yaw, pitch, hfov, w, h, output_dir, filename) -> View:
