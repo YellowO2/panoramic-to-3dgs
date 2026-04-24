@@ -22,3 +22,15 @@ da3 auto ./output_views     --export-format glb     --export-dir ./output_depth 
 
 
 da3 auto ./all_views     --export-format glb     --export-dir ./output_depth     --model-dir ./models/models--depth-anything--DA3NESTED-GIANT-LARGE-1.1/snapshots/b2359bdf726fb44ef62acca04d629dcf158053e7
+
+
+  Architectural Summary:
+   - datatype.py: Defines View objects, which is a data type which contains necessary info to generate and process a splat
+   - components/DepthMapGenerator/:
+       - DA360DepthModel: Handles panorama-level depth.
+       - DA3Model: Handles multi-view depth and pose inference.
+   - components/ViewExtractor/: Slices the panorama (and optional depth map) into standard View objects.
+   - components/SplatGenerator/: Generates 3DGS from View images.
+   - components/SplatProcessor/: A "model-free" component that aligns and merges splats based on whatever depth or extrinsics are found in
+     the View objects.
+   - main.py: Clean, readable orchestrator with a simple depth_mode toggle.

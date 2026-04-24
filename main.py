@@ -2,22 +2,23 @@ import os
 import torch
 from components.SplatGenerator.SplatGenerator import SplatGenerator
 from components.DepthMapGenerator.DA360DepthModel import DA360DepthModel
+from components.DepthMapGenerator.DA3Model import DA3Model
+from components.SplatProcessor.SplatProcessor import SplatProcessor
 from components.ImageCleaner.ImageCleaner import ImageCleaner
-from functions.extract_views_from_panorama import extract_views
-from functions.process_splats import process_splats
+from components.ViewExtractor.ViewExtractor import extract_views
 from sharp.utils.gaussians import save_ply
 
 def run_panoramic_pipeline(
     panorama_path,
     output_dir,
     clean_image=False,
-    use_da360=True,
+    depth_mode='da360', # 'da360' or 'da3' or None
     model_paths=None
 ):
     """
-    Standard pipeline: panoramic -> (clean) -> (depth) -> slice -> 3dgs -> align -> combine
+    Standard pipeline: panoramic -> (clean) -> extract -> (depth) -> splat -> process
     """
-    print(f"Starting panoramic pipeline for: {panorama_path}")
+    print(f"Starting pipeline for: {panorama_path} | Mode: {depth_mode}")
     os.makedirs(output_dir, exist_ok=True)
     
     # 1. Clean Panorama (Optional)
@@ -29,16 +30,16 @@ def run_panoramic_pipeline(
         cleaner.clean(current_image, output_path=cleaned_path)
         current_image = cleaned_path
 
-    # 2. Generate Depth Map (Optional)
+    # 2. Depth (DA360)
     panorama_depth = None
-    if use_da360:
+    if depth_mode == 'da360':
         print("--- Step: DA360 Depth Generation ---")
-        depth_model = DA360DepthModel(model_paths['da360'])
-        panorama_depth = depth_model.predict(current_image)
-        depth_model.save_debug_ply(panorama_depth, current_image, os.path.join(output_dir, "debug_da360.ply"))
+        da360 = DA360DepthModel(model_paths['da360'])
+        panorama_depth = da360.predict(current_image)
+        da360.save_debug_ply(panorama_depth, current_image, os.path.join(output_dir, "debug_da360.ply"))
 
-    # 3. Slice Panorama
-    print("--- Step: Slicing Panorama ---")
+    # 3. Extract Views
+    print("--- Step: View Extraction ---")
     views_output_dir = os.path.join(output_dir, "views")
     os.makedirs(views_output_dir, exist_ok=True)
     views_data = extract_views(
@@ -46,21 +47,28 @@ def run_panoramic_pipeline(
         views_output_dir,
         overlap_degrees=9,
         slice_count=4,
-        panorama_depth=panorama_depth
+        panorama_depth=panorama_depth # Slices depth if da360 was used
     )
 
-    # 4. Generate 3DGS
-    print("--- Step: 3DGS Generation (SHARP) ---")
+    # 4. View-level Depth (DA3)
+    if depth_mode == 'da3':
+        print("--- Step: DA3 Multi-view Depth/Pose Generation ---")
+        da3 = DA3Model(model_paths['da3'])
+        da3.process_views(views_data) # Updates views_data in-place with depth/extrinsics
+
+    # 5. Generate Splats
+    print("--- Step: Splat Generation (SHARP) ---")
     gs_generator = SplatGenerator(model_paths['sharp'])
     gs_output_dir = os.path.join(output_dir, "gs")
     gaussian_list = gs_generator.generate_from_views(views_data, output_dir=gs_output_dir)
 
-    # 5. Align and Merge
-    print("--- Step: Aligning and Merging Splats ---")
-    merged_splat = process_splats(views_data, gaussian_list, enable_alignment=use_da360)
+    # 6. Process and Merge
+    print("--- Step: Splat Processing (Alignment/Merge) ---")
+    processor = SplatProcessor()
+    merged_splat = processor.process(views_data, gaussian_list, enable_alignment=(depth_mode is not None))
     
-    # 6. Save Final Result
-    final_path = os.path.join(output_dir, "final_aligned.ply")
+    # 7. Save Final Result
+    final_path = os.path.join(output_dir, "final_output.ply")
     save_ply(
         merged_splat, 
         f_px=views_data[0].focal_px, 
@@ -70,20 +78,17 @@ def run_panoramic_pipeline(
     print(f"Pipeline complete. Final result saved to {final_path}")
 
 if __name__ == '__main__':
-    # Configuration
-    panorama_to_process = 'data/inputs/cleaned_test_output.png'
-    output_root = 'data/outputs'
-    
+    # Paths & Configuration
     models = {
         'da360': "models/DA360_large.pth",
+        'da3': "models/models--depth-anything--DA3NESTED-GIANT-LARGE-1.1/snapshots/b2359bdf726fb44ef62acca04d629dcf158053e7",
         'sharp': "models/sharp_2572gikvuh.pt"
     }
 
-    # You can easily toggle steps here
     run_panoramic_pipeline(
-        panorama_path=panorama_to_process,
-        output_dir=output_root,
+        panorama_path='data/inputs/cleaned_test_output.png',
+        output_dir='data/outputs/modular_run',
         clean_image=False,
-        use_da360=True,    # set to False to skip DA360 depth
+        depth_mode='da360', # Choose between 'da360', 'da3', or None
         model_paths=models
     )

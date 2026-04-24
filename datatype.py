@@ -17,6 +17,6 @@ class View:
     
     # --- may or may not have depending on pipeline used ---
     image: Optional[np.ndarray] = None
-    da360_depth: Optional[MatLike] = None
+    depth: Optional[np.ndarray] = None
     splat: Optional[Gaussians3D] = None
-    extrinsics: Optional[np.ndarray] = None  # 3x4 W2C matrix, if using DA3
+    extrinsics: Optional[np.ndarray] = None  # 3x4 W2C matrix, if using DA3 (or pose info)
