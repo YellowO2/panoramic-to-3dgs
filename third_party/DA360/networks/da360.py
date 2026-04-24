@@ -12,7 +12,7 @@ from depth_anything_v2.dpt import DepthAnythingV2
 from .layers import MultiLayerMLP, modify_conv_layers
 
 try:
-    autocast = torch.cuda.amp.autocast
+     autocast = torch.amp.autocast
 except:
     # dummy autocast for PyTorch < 1.6
     class autocast:

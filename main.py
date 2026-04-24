@@ -72,7 +72,7 @@ def run_panoramic_pipeline(
 if __name__ == '__main__':
     # Configuration
     panorama_to_process = 'data/inputs/cleaned_test_output.png'
-    output_root = 'data/outputs/test_pipeline'
+    output_root = 'data/outputs'
     
     models = {
         'da360': "models/DA360_large.pth",
