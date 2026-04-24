@@ -39,7 +39,7 @@ def run_panoramic_pipeline(
         da360 = DA360DepthModel(model_paths['da360'])
         saver = Saver(save_dir="./output_directory")
         # Run inference
-        depth, rgb = da360.predict("test_image.png")
+        depth, rgb = da360.predict(current_image)
         saver.save_as_point_cloud(
         depth=depth, 
         rgb=rgb, 
