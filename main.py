@@ -6,9 +6,8 @@ from components.DepthMapGenerator.DA3Model import DA3Model
 from components.SplatProcessor.SplatProcessor import SplatProcessor
 from components.ImageCleaner.ImageCleaner import ImageCleaner
 from components.ViewExtractor.ViewExtractor import extract_views
+from components.Saver.Saver import Saver
 from sharp.utils.gaussians import save_ply
-from third_party.DA360.saver import Saver #perhaps i should move this to a utils file
-
 
 def run_panoramic_pipeline(
     panorama_path,
@@ -22,6 +21,7 @@ def run_panoramic_pipeline(
     """
     print(f"Starting pipeline for: {panorama_path} | Mode: {depth_mode}")
     os.makedirs(output_dir, exist_ok=True)
+    saver = Saver()
     
     # 1. Clean Panorama (Optional)
     current_image = panorama_path
@@ -32,20 +32,16 @@ def run_panoramic_pipeline(
         cleaner.clean(current_image, output_path=cleaned_path)
         current_image = cleaned_path
 
-    # 2. Depth (DA360)
+    # 2. Panorama-level Depth (DA360)
     panorama_depth = None
     if depth_mode == 'da360':
         print("--- Step: DA360 Depth Generation ---")
         da360 = DA360DepthModel(model_paths['da360'])
-        saver = Saver(save_dir="./output_directory")
-        # Run inference
-        depth, rgb = da360.predict(current_image)
-        saver.save_as_point_cloud(
-        depth=depth, 
-        rgb=rgb, 
-        path="./output_directory/debug_cloud.ply", 
-        mask=None
-        )
+        panorama_depth, _ = da360.predict(current_image)
+        
+        # Save simple visual results
+        saver.save_depth_image(panorama_depth, os.path.join(output_dir, "da360_depth.jpg"))
+        saver.save_point_cloud(panorama_depth, current_image, os.path.join(output_dir, "da360_debug.ply"))
 
     # 3. Extract Views
     print("--- Step: View Extraction ---")
@@ -56,14 +52,14 @@ def run_panoramic_pipeline(
         views_output_dir,
         overlap_degrees=9,
         slice_count=4,
-        panorama_depth=panorama_depth # Slices depth if da360 was used
+        panorama_depth=panorama_depth 
     )
 
     # 4. View-level Depth (DA3)
     if depth_mode == 'da3':
         print("--- Step: DA3 Multi-view Depth/Pose Generation ---")
         da3 = DA3Model(model_paths['da3'])
-        da3.process_views(views_data) # Updates views_data in-place with depth/extrinsics
+        da3.process_views(views_data) 
 
     # 5. Generate Splats
     print("--- Step: Splat Generation (SHARP) ---")
@@ -98,6 +94,6 @@ if __name__ == '__main__':
         panorama_path='data/inputs/cleaned_test_output.png',
         output_dir='data/outputs/modular_run',
         clean_image=False,
-        depth_mode='da360', # Choose between 'da360', 'da3', or None
+        depth_mode='da360',
         model_paths=models
     )
