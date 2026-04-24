@@ -7,6 +7,8 @@ from components.SplatProcessor.SplatProcessor import SplatProcessor
 from components.ImageCleaner.ImageCleaner import ImageCleaner
 from components.ViewExtractor.ViewExtractor import extract_views
 from sharp.utils.gaussians import save_ply
+from third_party.DA360.saver import Saver #perhaps i should move this to a utils file
+
 
 def run_panoramic_pipeline(
     panorama_path,
@@ -35,8 +37,15 @@ def run_panoramic_pipeline(
     if depth_mode == 'da360':
         print("--- Step: DA360 Depth Generation ---")
         da360 = DA360DepthModel(model_paths['da360'])
-        panorama_depth = da360.predict(current_image)
-        da360.save_debug_ply(panorama_depth, current_image, os.path.join(output_dir, "debug_da360.ply"))
+        saver = Saver(save_dir="./output_directory")
+        # Run inference
+        depth, rgb = da360.predict("test_image.png")
+        saver.save_as_point_cloud(
+        depth=depth, 
+        rgb=rgb, 
+        path="./output_directory/debug_cloud.ply", 
+        mask=None
+        )
 
     # 3. Extract Views
     print("--- Step: View Extraction ---")
