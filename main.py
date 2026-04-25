@@ -13,7 +13,7 @@ def run_panoramic_pipeline(
     panorama_path,
     output_dir,
     clean_image=False,
-    depth_mode='da360', # 'da360' or 'da3' or None
+    depth_mode=None, # 'da360' or 'da3' or None
     model_paths=None
 ):
     """
@@ -91,9 +91,9 @@ if __name__ == '__main__':
     }
 
     run_panoramic_pipeline(
-        panorama_path='data/inputs/cleaned_test_output.png',
+        panorama_path='data_helvipad/2024/0001.jpg',
         output_dir='data/outputs/modular_run',
         clean_image=False,
-        depth_mode='da360',
+        depth_mode=None,
         model_paths=models
     )
