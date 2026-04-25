@@ -1,15 +1,17 @@
 import os
 import sys
+from typing import Tuple
 import torch
 import cv2
+import numpy as np
 from torchvision import transforms
 
 class DA360DepthModel:
-    def __init__(self, model_path: str, device: str = "cuda"):
+    def __init__(self, model_path: str, device: str = "cuda") -> None:
         self.device = device
         self.model = self._load_model(model_path)
         
-    def _load_model(self, model_path):
+    def _load_model(self, model_path: str) -> torch.nn.Module:
         print(f"Loading DA360 model from '{model_path}' on {self.device}...")
 
         # Point to the local modularized implementation
@@ -35,7 +37,7 @@ class DA360DepthModel:
         model.eval()
         return model
 
-    def predict(self, image_path: str):
+    def predict(self, image_path: str) -> Tuple[np.ndarray, np.ndarray]:
         img = cv2.imread(image_path, cv2.IMREAD_COLOR)
         if img is None:
             raise ValueError(f"Could not read image at {image_path}")

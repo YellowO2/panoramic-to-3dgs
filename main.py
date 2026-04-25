@@ -1,5 +1,7 @@
 import os
 import torch
+import cv2
+import numpy as np
 from components.SplatGenerator.SplatGenerator import SplatGenerator
 from components.DepthMapGenerator.DA360DepthModel import DA360DepthModel
 from components.DepthMapGenerator.DA3Model import DA3Model
@@ -13,7 +15,8 @@ def run_panoramic_pipeline(
     panorama_path,
     output_dir,
     clean_image=False,
-    depth_mode=None, # 'da360' or 'da3' or None
+    depth_mode=None, # 'da360' or 'da3' or 'external' or None
+    external_depth_path=None,
     model_paths=None
 ):
     """
@@ -32,16 +35,27 @@ def run_panoramic_pipeline(
         cleaner.clean(current_image, output_path=cleaned_path)
         current_image = cleaned_path
 
-    # 2. Panorama-level Depth (DA360)
+    # 2. Panorama-level Depth
     panorama_depth = None
     if depth_mode == 'da360':
         print("--- Step: DA360 Depth Generation ---")
         da360 = DA360DepthModel(model_paths['da360'])
         panorama_depth, _ = da360.predict(current_image)
-        
-        # Save simple visual results
-        saver.save_depth_image(panorama_depth, os.path.join(output_dir, "da360_depth.jpg"))
-        saver.save_point_cloud(panorama_depth, current_image, os.path.join(output_dir, "da360_debug.ply"))
+    
+    elif depth_mode == 'external' and external_depth_path:
+        print(f"--- Step: Loading External Depth from {external_depth_path} ---")
+        # Load as-is (supporting uint16/LiDAR depth maps)
+        panorama_depth = cv2.imread(external_depth_path, cv2.IMREAD_UNCHANGED)
+        if panorama_depth is None:
+            raise ValueError(f"Could not load external depth at {external_depth_path}")
+
+    # Save simple visual results for any panorama-level depth
+    if panorama_depth is not None:
+        saver.save_depth_image(panorama_depth, os.path.join(output_dir, "panorama_depth_visual.jpg"))
+        try:
+            saver.save_point_cloud(panorama_depth, current_image, os.path.join(output_dir, "panorama_depth_debug.ply"))
+        except Exception as e:
+            print(f"Warning: Could not save debug point cloud: {e}")
 
     # 3. Extract Views
     print("--- Step: View Extraction ---")
@@ -94,6 +108,7 @@ if __name__ == '__main__':
         panorama_path='data_helvipad/2024/0001.jpg',
         output_dir='data/outputs/modular_run',
         clean_image=False,
-        depth_mode=None,
+        depth_mode='external',
+        external_depth_path='data_helvipad/2024/0001.png',
         model_paths=models
     )
