@@ -4,7 +4,7 @@ import math
 from components.ViewExtractor import Equirec2Perspec as E2P
 from datatype import View
 
-def _save_view(equ, depth_equ, yaw, pitch, hfov, w, h, output_dir, filename) -> View:
+def _save_view(equ, depth_equ, yaw, pitch, hfov, w, h, output_dir, filename, pano_id=0) -> View:
     """Helper to slice a single view and return a View object."""
     img = equ.GetPerspective(hfov, yaw, pitch, h, w)
     output_path = os.path.join(output_dir, filename)
@@ -23,6 +23,7 @@ def _save_view(equ, depth_equ, yaw, pitch, hfov, w, h, output_dir, filename) -> 
         focal_px=focal_px,
         hfov=hfov,
         vfov=vfov,
+        pano_id=pano_id
     )
     
     if depth_equ is not None:
@@ -36,6 +37,7 @@ def extract_views(
     slice_count=4,
     prefix="",
     panorama_depth=None,
+    pano_id=0
 ) -> list[View]:
     """Extracts standard views for SHARP (side slices + top/bottom)."""
     equ = E2P.Equirectangular(input_image)
@@ -52,18 +54,18 @@ def extract_views(
 
     views_data: list[View] = []
     
-    # 1. Side views
+    # 1. Side views (Horizon)
     yaw_values = [(span_degrees * i) for i in range(slice_count)]
     for yaw in yaw_values:
         filename = f"{prefix}view_{int(round(yaw))}_0.jpg"
-        views_data.append(_save_view(equ, depth_equ, yaw, 0, hfov, slice_w, slice_h, output_dir, filename))
+        views_data.append(_save_view(equ, depth_equ, yaw, 0, hfov, slice_w, slice_h, output_dir, filename, pano_id=pano_id))
 
     # 2. Top/Bottom views (usually square for zenith/nadir)
     tb_hfov = 60.0
     tb_size = slice_w
     
-    views_data.append(_save_view(equ, depth_equ, 0, 90, tb_hfov, tb_size, tb_size, output_dir, f"{prefix}view_0_90.jpg"))
-    views_data.append(_save_view(equ, depth_equ, 0, -90, tb_hfov, tb_size, tb_size, output_dir, f"{prefix}view_0_-90.jpg"))
+    views_data.append(_save_view(equ, depth_equ, 0, 90, tb_hfov, tb_size, tb_size, output_dir, f"{prefix}view_0_90.jpg", pano_id=pano_id))
+    views_data.append(_save_view(equ, depth_equ, 0, -90, tb_hfov, tb_size, tb_size, output_dir, f"{prefix}view_0_-90.jpg", pano_id=pano_id))
     
     return views_data
 
@@ -74,6 +76,7 @@ def extract_views_for_da360(
     slice_count,
     prefix="",
     panorama_depth=None,
+    pano_id=0
 ) -> list[View]:
     """Extracts high-overlap views for DA360 alignment."""
     equ = E2P.Equirectangular(input_image)
@@ -92,6 +95,6 @@ def extract_views_for_da360(
     yaw_values = [(span_degrees * i) for i in range(slice_count)]
     for yaw in yaw_values:
         filename = f"{prefix}_{int(round(yaw))}_0.jpg"
-        views_data.append(_save_view(equ, depth_equ, yaw, 0, hfov, slice_w, slice_h, output_dir, filename))
+        views_data.append(_save_view(equ, depth_equ, yaw, 0, hfov, slice_w, slice_h, output_dir, filename, pano_id=pano_id))
             
     return views_data

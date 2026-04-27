@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 from depth_anything_3.api import DepthAnything3
 from datatype import View
 
@@ -10,20 +11,36 @@ class DA3Model:
 
     def process_views(self, views: list[View], export_dir=None):
         """
-        Runs multi-view inference on the provided View objects 
-        and updates them with the generated depth and extrinsics.
+        Runs multi-view inference and returns a map of pano_id -> median_center (3,)
         """
-        image_paths = [v.path for v in views]
-        print(f"Running DA3 multi-view inference on {len(image_paths)} views...")
+        if not views: return {}
+        prediction = self.model.inference([v.path for v in views], export_dir=export_dir, export_format="glb" if export_dir else "mini_npz")
         
-        if export_dir:
-            prediction = self.model.inference(image_paths, export_dir=export_dir, export_format="glb")
-        else:
-            prediction = self.model.inference(image_paths)
-            
-        # Update the View objects with the results
+        # Store results in views
         for i, v in enumerate(views):
             v.depth = prediction.depth[i]
             v.extrinsics = prediction.extrinsics[i]
             
-        return prediction
+        # Calculate shared centers per pano_id
+        pano_centers = {}
+        pano_groups = {}
+        for v in views:
+            if v.pano_id not in pano_groups: pano_groups[v.pano_id] = []
+            pano_groups[v.pano_id].append(v)
+            
+        for pano_id, group in pano_groups.items():
+            # Get camera positions (C = -R^T @ t)
+            centers = []
+            for v in group:
+                R, t = v.extrinsics[:, :3], v.extrinsics[:, 3:]
+                centers.append((-R.T @ t).flatten())
+            
+            median_center = np.median(centers, axis=0)
+            pano_centers[pano_id] = median_center
+            
+            # Snap horizon slices to this center
+            for v in group:
+                R = v.extrinsics[:, :3]
+                v.extrinsics[:, 3] = (-R @ median_center.reshape(3, 1)).flatten()
+                
+        return pano_centers

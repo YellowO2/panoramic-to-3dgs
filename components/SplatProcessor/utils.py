@@ -6,6 +6,67 @@ from typing import Tuple, Optional
 from scipy.spatial.transform import Rotation
 from sharp.utils.gaussians import Gaussians3D, apply_transform
 
+def backproject_views_to_pcd(views: list):
+    """
+    Back-projects multiple perspective views into a single world-space point cloud.
+    Uses the depth and extrinsics stored in each View object.
+    """
+    all_points = []
+    all_colors = []
+    
+    for v in views:
+        if v.depth is None or v.extrinsics is None:
+            continue
+        
+        h, w = v.depth.shape
+        # Create pixel grid
+        x = np.arange(w)
+        y = np.arange(h)
+        xv, yv = np.meshgrid(x, y)
+        
+        # cx, cy center aligned with our projection logic
+        cx = (w / 2.0) - 0.5
+        cy = (h / 2.0) - 0.5
+        
+        d = v.depth.flatten()
+        # DA3 depth is metric. We filter invalid or extreme values.
+        valid = np.isfinite(d) & (d > 1e-4) & (d < 100.0)
+        
+        d = d[valid]
+        u = xv.flatten()[valid]
+        v_px = yv.flatten()[valid]
+        
+        # 1. Camera Space (OpenCV: X-right, Y-down, Z-forward)
+        pts_cam = np.stack([
+            (u - cx) * d / v.focal_px,
+            (v_px - cy) * d / v.focal_px,
+            d
+        ], axis=1)
+        
+        # 2. World Space
+        # v.extrinsics is W2C (3x4), convert to homogeneous 4x4
+        w2c = np.eye(4)
+        w2c[:3, :] = v.extrinsics
+        c2w = np.linalg.inv(w2c)
+        
+        pts_world = (c2w[:3, :3] @ pts_cam.T).T + c2w[:3, 3]
+        
+        all_points.append(pts_world)
+        
+        if v.image is not None:
+            # v.image is expected to be RGB
+            img_colors = v.image
+            if img_colors.shape[:2] != (h, w):
+                img_colors = cv2.resize(img_colors, (w, h), interpolation=cv2.INTER_AREA)
+            
+            colors = img_colors.reshape(-1, 3)[valid] / 255.0
+            all_colors.append(colors)
+            
+    if not all_points:
+        return None, None
+        
+    return np.concatenate(all_points, axis=0), np.concatenate(all_colors, axis=0)
+
 def panoramic_depth_to_pcd(
     depth: np.ndarray, 
     image: Optional[np.ndarray] = None, 
@@ -14,17 +75,7 @@ def panoramic_depth_to_pcd(
 ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
     """
     Converts a panoramic depth map to anpoint cloud with colors. Sky is filtered out.
-    
-    Args:
-        depth: (H, W) depth map.
-        image: (H_img, W_img, 3) panoramic image for coloring.
-        v_fov_deg: Vertical FOV in degrees.
-        max_depth_mult: Filter points further than this multiple of the median depth.
-        
-    Returns:
-        points: (N, 3) filtered XYZ points.
-        colors: (N, 3) filtered RGB colors (normalized 0-1).
-    """
+a    """
     h, w = depth.shape
     
     # 1. Prepare Projection Math

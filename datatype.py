@@ -14,7 +14,10 @@ class View:
     hfov: float
     vfov: float
     focal_px: float
-    
+
+    # --- Identification and Grouping ---
+    pano_id: int = 0  # To group slices from the same panorama
+
     # --- may or may not have depending on pipeline used ---
     image: Optional[np.ndarray] = None
     depth: Optional[np.ndarray] = None
