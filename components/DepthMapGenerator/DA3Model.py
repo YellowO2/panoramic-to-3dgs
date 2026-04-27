@@ -6,7 +6,7 @@ from datatype import View
 
 class DA3Result:
     def __init__(self, pano_poses, prediction):
-        self.pano_poses = pano_poses # pano_id -> {center, rotation}
+        self.pano_poses = pano_poses # map of pano_ids to {center, rotation}
         self.prediction = prediction # Full DA3 Prediction object
 
 class DA3Model:
