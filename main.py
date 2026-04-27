@@ -77,22 +77,9 @@ def run_panoramic_pipeline(
         horizon_views = [v for v in all_views_data if abs(v.pitch) < 1e-3]
         pano_centers = da3.process_views(horizon_views) 
 
-        # Assign snapping poses to ALL views (Horizon + Top/Bottom)
-        for v in all_views_data:
-            center = pano_centers.get(v.pano_id, np.zeros(3))
-            
-            # If horizon view, R is already from DA3. If Top/Bottom, use manual rotation.
-            if v.extrinsics is not None:
-                R = v.extrinsics[:, :3]
-            else:
-                R = Rotation.from_euler('yx', [v.yaw, v.pitch], degrees=True).as_matrix().T
-                
-            # Update translation to shared center: t = -R @ center
-            v.extrinsics = np.hstack((R, (-R @ center.reshape(3, 1))))
-
         # Save DA3 Debug Point Cloud
         print("--- Step: Saving DA3 Debug Consistency Point Cloud ---")
-        da3_points, da3_colors = backproject_views_to_pcd(all_views_data)
+        da3_points, da3_colors = backproject_views_to_pcd(all_views_data, pano_poses=pano_centers)
         if da3_points is not None:
             saver.save_point_cloud(da3_points, os.path.join(output_dir, "da3_debug_consistency.ply"), colors=da3_colors)
 
@@ -105,7 +92,8 @@ def run_panoramic_pipeline(
     # 6. Process and Merge
     print("--- Step: Splat Processing (Alignment/Merge) ---")
     processor = SplatProcessor()
-    merged_splat = processor.process(all_views_data, gaussian_list, enable_alignment=(depth_mode is not None))
+    # Pass pano_centers if using DA3
+    merged_splat = processor.process(all_views_data, gaussian_list, pano_poses=(pano_centers if depth_mode == 'da3' else None))
     
     # 7. Save Final Result
     final_path = os.path.join(output_dir, "final_output.ply")

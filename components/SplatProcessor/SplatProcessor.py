@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import math
+from scipy.spatial.transform import Rotation
 from sharp.utils.gaussians import Gaussians3D, apply_transform
 from datatype import View
 from components.SplatProcessor.utils import (
@@ -108,7 +109,6 @@ class SplatProcessor:
         
         num_valid = int(valid.sum())
         if num_valid < 64:
-            print(f"Warning: Only {num_valid} valid points found for alignment. Skipping.")
             return gaussians
 
         # 2. Compute point scales (from utils)
@@ -117,10 +117,7 @@ class SplatProcessor:
         )
         
         if raw_scale_ok is None:
-            print("Warning: Not enough points with valid reference depth. Skipping.")
             return gaussians
-
-        print(f"Alignment: {int(ok.sum())} points used. Global median scale: {median_scale:.4f}")
 
         # 3. Build grid (Local logic)
         grid_cells_x = max(1, int(self.grid_resolution))
@@ -138,35 +135,38 @@ class SplatProcessor:
             raw_scale_ok, valid, ok, median_scale
         )
 
-    def process(self, views: list[View], splats_list: list[Gaussians3D], enable_alignment: bool = True) -> Gaussians3D:
+    def process(self, views: list[View], splats_list: list[Gaussians3D], pano_poses: dict = None) -> Gaussians3D:
         """Main processing loop: align, trim, pose, and merge."""
         processed_splats = []
         
         for i, (view, splat) in enumerate(zip(views, splats_list)):
             # 1. Alignment (if depth map exists in View)
-            if enable_alignment and view.depth is not None:
-                focal_px = float(view.focal_px)
+            if view.depth is not None:
                 splat = self.align_gaussians_to_depth(
-                    splat, view.depth, focal_px, focal_px, int(view.width), int(view.height)
+                    splat, view.depth, view.focal_px, view.focal_px, int(view.width), int(view.height)
                 )
-                print(f"Aligned splat {i+1}/{len(views)} using reference depth.")
 
-            # 2. Trim edges (from utils)
+            # 2. Trim edges
             hfov_keep = view.hfov - 6.0
             splat = trim_by_fov(splat, hfov_limit=hfov_keep)
             
-            # 3. Apply Global Pose (using extrinsics or manual rotation)
-            if enable_alignment and view.extrinsics is not None:
-                # Use extrinsics provided by DA3
-                w2c = view.extrinsics
-                r_c2w = w2c[:, :3].T
-                t_c2w = -r_c2w @ w2c[:, 3:]
-                c2w = np.hstack((r_c2w, t_c2w))
+            # 3. Apply Global Pose
+            if pano_poses and view.pano_id in pano_poses:
+                # Use predicted shared center + manual rotation for consistency
+                center = pano_poses[view.pano_id] # (3,)
+                
+                # Manual rotation from yaw/pitch (X-right, Y-down, Z-forward)
+                rot = Rotation.from_euler('yx', [view.yaw, view.pitch], degrees=True).as_matrix()
+                # C2W = [R | center]
+                c2w = np.eye(4)
+                c2w[:3, :3] = rot
+                c2w[:3, 3] = center
+                
                 device = splat.mean_vectors.device
-                c2w_tensor = torch.tensor(c2w, dtype=torch.float32, device=device)
+                c2w_tensor = torch.tensor(c2w[:3, :], dtype=torch.float32, device=device)
                 splat = apply_transform(splat, c2w_tensor)
             else:
-                # Fallback to manual rotation (from utils)
+                # Fallback to local origin rotation
                 splat = rotate_to_pose(splat, yaw=view.yaw, pitch=view.pitch)
 
             processed_splats.append(splat)

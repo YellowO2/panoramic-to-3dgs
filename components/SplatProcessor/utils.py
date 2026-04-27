@@ -2,70 +2,57 @@ import torch
 import numpy as np
 import math
 import cv2
+import os
 from typing import Tuple, Optional
 from scipy.spatial.transform import Rotation
 from sharp.utils.gaussians import Gaussians3D, apply_transform
 
-def backproject_views_to_pcd(views: list):
+def backproject_views_to_pcd(views: list, pano_poses: dict = None):
     """
     Back-projects multiple perspective views into a single world-space point cloud.
-    Uses the depth and extrinsics stored in each View object.
     """
     all_points = []
     all_colors = []
     
     for v in views:
-        if v.depth is None or v.extrinsics is None:
-            continue
+        if v.depth is None: continue
         
         h, w = v.depth.shape
-        # Create pixel grid
-        x = np.arange(w)
-        y = np.arange(h)
+        x, y = np.arange(w), np.arange(h)
         xv, yv = np.meshgrid(x, y)
         
-        # cx, cy center aligned with our projection logic
-        cx = (w / 2.0) - 0.5
-        cy = (h / 2.0) - 0.5
-        
+        cx, cy = (w / 2.0) - 0.5, (h / 2.0) - 0.5
         d = v.depth.flatten()
-        # DA3 depth is metric. We filter invalid or extreme values.
         valid = np.isfinite(d) & (d > 1e-4) & (d < 100.0)
         
-        d = d[valid]
-        u = xv.flatten()[valid]
-        v_px = yv.flatten()[valid]
+        d_v, u_v, v_v = d[valid], xv.flatten()[valid], yv.flatten()[valid]
         
-        # 1. Camera Space (OpenCV: X-right, Y-down, Z-forward)
-        pts_cam = np.stack([
-            (u - cx) * d / v.focal_px,
-            (v_px - cy) * d / v.focal_px,
-            d
-        ], axis=1)
+        # Camera Space
+        pts_cam = np.stack([(u_v - cx) * d_v / v.focal_px, (v_v - cy) * d_v / v.focal_px, d_v], axis=1)
         
-        # 2. World Space
-        # v.extrinsics is W2C (3x4), convert to homogeneous 4x4
-        w2c = np.eye(4)
-        w2c[:3, :] = v.extrinsics
-        c2w = np.linalg.inv(w2c)
-        
-        pts_world = (c2w[:3, :3] @ pts_cam.T).T + c2w[:3, 3]
-        
+        # World Space
+        if pano_poses and v.pano_id in pano_poses:
+            center = pano_poses[v.pano_id]
+            rot = Rotation.from_euler('yx', [v.yaw, v.pitch], degrees=True).as_matrix()
+            pts_world = (rot @ pts_cam.T).T + center
+        else:
+            # Fallback to identity pose
+            pts_world = pts_cam
+            
         all_points.append(pts_world)
         
-        if v.image is not None:
-            # v.image is expected to be RGB
-            img_colors = v.image
-            if img_colors.shape[:2] != (h, w):
-                img_colors = cv2.resize(img_colors, (w, h), interpolation=cv2.INTER_AREA)
+        # Colors
+        img_rgb = None
+        if v.path and os.path.exists(v.path):
+            img_bgr = cv2.imread(v.path)
+            if img_bgr is not None: img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
             
-            colors = img_colors.reshape(-1, 3)[valid] / 255.0
-            all_colors.append(colors)
+        if img_rgb is not None:
+            if img_rgb.shape[:2] != (h, w): img_rgb = cv2.resize(img_rgb, (w, h))
+            all_colors.append(img_rgb.reshape(-1, 3)[valid] / 255.0)
             
-    if not all_points:
-        return None, None
-        
-    return np.concatenate(all_points, axis=0), np.concatenate(all_colors, axis=0)
+    if not all_points: return None, None
+    return np.concatenate(all_points, axis=0), (np.concatenate(all_colors, axis=0) if all_colors else None)
 
 def panoramic_depth_to_pcd(
     depth: np.ndarray, 
@@ -75,7 +62,7 @@ def panoramic_depth_to_pcd(
 ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
     """
     Converts a panoramic depth map to anpoint cloud with colors. Sky is filtered out.
-a    """
+    """
     h, w = depth.shape
     
     # 1. Prepare Projection Math
