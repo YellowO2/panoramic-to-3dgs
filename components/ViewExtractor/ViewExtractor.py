@@ -43,7 +43,7 @@ def extract_views(
 
     pano_h, pano_w = equ._img.shape[:2]
     slice_w = max(64, pano_w // slice_count)
-    slice_h = pano_h * 0.8
+    slice_h = pano_h * 0.5
 
     span_degrees = 360.0 / slice_count
     hfov = min(170.0, span_degrees + float(overlap_degrees))

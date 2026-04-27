@@ -105,10 +105,10 @@ if __name__ == '__main__':
     }
 
     run_panoramic_pipeline(
-        panorama_path='data_helvipad/2024/0001.jpg',
+        panorama_path='data/inputs/round1.jpg',
         output_dir='data/outputs/modular_run',
         clean_image=False,
-        depth_mode='external',
-        external_depth_path='data_helvipad/2024/0001.png',
+        depth_mode=None, # 'da360' or 'da3' or 'external' or None
+        # external_depth_path='data_helvipad/2024/0001.png',
         model_paths=models
     )
