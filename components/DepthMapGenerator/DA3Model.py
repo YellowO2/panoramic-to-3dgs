@@ -1,7 +1,13 @@
 import torch
 import numpy as np
+from scipy.spatial.transform import Rotation
 from depth_anything_3.api import DepthAnything3
 from datatype import View
+
+class DA3Result:
+    def __init__(self, pano_poses, prediction):
+        self.pano_poses = pano_poses # pano_id -> {center, rotation}
+        self.prediction = prediction # Full DA3 Prediction object
 
 class DA3Model:
     def __init__(self, model_path="./models/models--depth-anything--DA3NESTED-GIANT-LARGE-1.1/snapshots/b2359bdf726fb44ef62acca04d629dcf158053e7", device="cuda"):
@@ -10,37 +16,39 @@ class DA3Model:
         self.model = DepthAnything3.from_pretrained(model_path).to(device=device)
 
     def process_views(self, views: list[View], export_dir=None):
-        """
-        Runs multi-view inference and returns a map of pano_id -> median_center (3,)
-        """
-        if not views: return {}
-        prediction = self.model.inference([v.path for v in views], export_dir=export_dir, export_format="glb" if export_dir else "mini_npz")
+        if not views: return DA3Result({}, None)
         
-        # Store results in views
+        prediction = self.model.inference([v.path for v in views], export_dir=export_dir, export_format="mini_npz")
+        
+        # 1. Update View depths
         for i, v in enumerate(views):
             v.depth = prediction.depth[i]
-            v.extrinsics = prediction.extrinsics[i]
             
-        # Calculate shared centers per pano_id
-        pano_centers = {}
+        # 2. Extract shared poses
+        pano_poses = {}
         pano_groups = {}
-        for v in views:
+        for i, v in enumerate(views):
             if v.pano_id not in pano_groups: pano_groups[v.pano_id] = []
-            pano_groups[v.pano_id].append(v)
+            pano_groups[v.pano_id].append((v, i))
             
         for pano_id, group in pano_groups.items():
-            # Get camera positions (C = -R^T @ t)
             centers = []
-            for v in group:
-                R, t = v.extrinsics[:, :3], v.extrinsics[:, 3:]
-                centers.append((-R.T @ t).flatten())
+            global_rots = []
+            for v, idx in group:
+                w2c = prediction.extrinsics[idx]
+                R_w2c, t_w2c = w2c[:3, :3], w2c[:3, 3:]
+                centers.append((-R_w2c.T @ t_w2c).flatten())
+                R_local = Rotation.from_euler('yx', [v.yaw, v.pitch], degrees=True).as_matrix()
+                global_rots.append(R_local.T @ R_w2c)
             
             median_center = np.median(centers, axis=0)
-            pano_centers[pano_id] = median_center
+            median_rot = global_rots[0]
+            pano_poses[pano_id] = {'center': median_center, 'rotation': median_rot}
             
-            # Snap horizon slices to this center
-            for v in group:
-                R = v.extrinsics[:, :3]
-                v.extrinsics[:, 3] = (-R @ median_center.reshape(3, 1)).flatten()
-                
-        return pano_centers
+            # Snap extrinsics in the Prediction object to the shared center
+            for v, idx in group:
+                w2c = prediction.extrinsics[idx]
+                R = w2c[:3, :3]
+                prediction.extrinsics[idx, :3, 3] = (-R @ median_center.reshape(3, 1)).flatten()
+        
+        return DA3Result(pano_poses, prediction)
