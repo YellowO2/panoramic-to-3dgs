@@ -11,6 +11,8 @@ from components.ViewExtractor.ViewExtractor import extract_views
 from components.Saver.Saver import Saver
 from sharp.utils.gaussians import save_ply
 
+from components.SplatProcessor.utils import panoramic_depth_to_pcd
+
 def run_panoramic_pipeline(
     panorama_path,
     output_dir,
@@ -40,7 +42,7 @@ def run_panoramic_pipeline(
     if depth_mode == 'da360':
         print("--- Step: DA360 Depth Generation ---")
         da360 = DA360DepthModel(model_paths['da360'])
-        panorama_depth, _ = da360.predict(current_image)
+        panorama_depth, panorama_image_rgb = da360.predict(current_image)
     
     elif depth_mode == 'external' and external_depth_path:
         print(f"--- Step: Loading External Depth from {external_depth_path} ---")
@@ -48,12 +50,16 @@ def run_panoramic_pipeline(
         panorama_depth = cv2.imread(external_depth_path, cv2.IMREAD_UNCHANGED)
         if panorama_depth is None:
             raise ValueError(f"Could not load external depth at {external_depth_path}")
+        # Load image for coloring
+        panorama_image_rgb = cv2.cvtColor(cv2.imread(current_image), cv2.COLOR_BGR2RGB)
 
     # Save simple visual results for any panorama-level depth
     if panorama_depth is not None:
         saver.save_depth_image(panorama_depth, os.path.join(output_dir, "panorama_depth_visual.jpg"))
         try:
-            saver.save_point_cloud(panorama_depth, current_image, os.path.join(output_dir, "panorama_depth_debug.ply"))
+            # Use the new utility to generate filtered PCD
+            pcd_points, pcd_colors = panoramic_depth_to_pcd(panorama_depth, panorama_image_rgb)
+            saver.save_point_cloud(pcd_points, os.path.join(output_dir, "panorama_depth_debug.ply"), colors=pcd_colors)
         except Exception as e:
             print(f"Warning: Could not save debug point cloud: {e}")
 

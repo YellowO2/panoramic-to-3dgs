@@ -27,30 +27,30 @@ class Saver:
         print(f"Saved depth image to: {path}")
 
     @staticmethod
-    def save_point_cloud(depth, rgb_path, path):
-        """Saves depth + original image as a 3D PLY file."""
-        img = cv2.imread(rgb_path)
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        h, w = depth.shape
-
-        # Create 3D points
-        Theta = np.pi - np.arange(h).reshape(h, 1) * np.pi / h - np.pi / (2 * h)
-        Theta = np.repeat(Theta, w, axis=1)
-        Phi = np.arange(w).reshape(1, w) * 2 * np.pi / w + np.pi / w - np.pi
-        Phi = np.repeat(Phi, h, axis=0)
-
-        X = depth * np.sin(Theta) * np.sin(Phi)
-        Y = depth * np.cos(Theta)
-        Z = depth * np.sin(Theta) * np.cos(Phi)
-        
-        # Simple mask to remove very far points (sky)
-        mask = depth < (np.median(depth) * 5.0)
-
-        XYZ = np.stack([X[mask], Y[mask], Z[mask]], axis=1)
-        RGB = np.stack([img_rgb[:, :, 0][mask], img_rgb[:, :, 1][mask], img_rgb[:, :, 2][mask]], axis=1) / 255.0
-
+    def save_point_cloud(points: np.ndarray, path: str, colors: np.ndarray = None):
+        """
+        Saves a raw XYZ point cloud (N, 3) to a PLY file.
+        Args:
+            points: (N, 3) array of XYZ points.
+            path: Output path.
+            colors: (N, 3) normalized RGB colors OR (H, W, 3) image.
+        """
         pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(XYZ)
-        pcd.colors = o3d.utility.Vector3dVector(RGB)
+        pcd.points = o3d.utility.Vector3dVector(points)
+        
+        if colors is not None:
+            if colors.ndim == 2 and colors.shape[0] == points.shape[0]:
+                # Already a list of colors (normalized 0-1)
+                pcd.colors = o3d.utility.Vector3dVector(colors)
+            elif colors.ndim == 3:
+                # It's an image, need to reshape it (legacy support)
+                # Assuming colors is BGR image from cv2
+                img_rgb = cv2.cvtColor(colors, cv2.COLOR_BGR2RGB)
+                flat_colors = img_rgb.reshape(-1, 3) / 255.0
+                if len(flat_colors) == len(points):
+                    pcd.colors = o3d.utility.Vector3dVector(flat_colors)
+                else:
+                    print(f"Warning: Image size doesn't match point count. Skipping colors.")
+        
         o3d.io.write_point_cloud(path, pcd)
         print(f"Saved point cloud to: {path}")

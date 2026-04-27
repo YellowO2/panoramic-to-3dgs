@@ -1,8 +1,76 @@
 import torch
 import numpy as np
 import math
+import cv2
+from typing import Tuple, Optional
 from scipy.spatial.transform import Rotation
 from sharp.utils.gaussians import Gaussians3D, apply_transform
+
+def panoramic_depth_to_pcd(
+    depth: np.ndarray, 
+    image: Optional[np.ndarray] = None, 
+    v_fov_deg: float = None, 
+    max_depth_mult: float = 5.0
+) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    """
+    Converts a panoramic depth map to anpoint cloud with colors. Sky is filtered out.
+    
+    Args:
+        depth: (H, W) depth map.
+        image: (H_img, W_img, 3) panoramic image for coloring.
+        v_fov_deg: Vertical FOV in degrees.
+        max_depth_mult: Filter points further than this multiple of the median depth.
+        
+    Returns:
+        points: (N, 3) filtered XYZ points.
+        colors: (N, 3) filtered RGB colors (normalized 0-1).
+    """
+    h, w = depth.shape
+    
+    # 1. Prepare Projection Math
+    if v_fov_deg is None:
+        theta_start, theta_end = 0.0, np.pi
+    else:
+        v_fov_rad = np.radians(v_fov_deg)
+        theta_start = (np.pi / 2.0) - (v_fov_rad / 2.0)
+        theta_end = (np.pi / 2.0) + (v_fov_rad / 2.0)
+
+    theta = np.linspace(theta_start, theta_end, h)
+    theta_grid = np.repeat(theta.reshape(h, 1), w, axis=1)
+    phi = np.linspace(-np.pi, np.pi, w)
+    phi_grid = np.repeat(phi.reshape(1, w), h, axis=0)
+
+    # 2. Convert to XYZ
+    x = depth * np.sin(theta_grid) * np.sin(phi_grid)
+    y = depth * np.cos(theta_grid)
+    z = depth * np.sin(theta_grid) * np.cos(phi_grid)
+    points = np.stack([x.flatten(), y.flatten(), z.flatten()], axis=1)
+
+    # 3. Prepare Colors
+    colors_filtered = None
+    if image is not None:
+        # Resize image to match depth map EXACTLY before flattening
+        img_resized = cv2.resize(image, (w, h), interpolation=cv2.INTER_AREA)
+        # Convert BGR to RGB if needed (assuming OpenCV input)
+        img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
+        colors_filtered = img_rgb.reshape(-1, 3) / 255.0
+
+    # 4. Filter Sky & Invalid Points
+    d_flat = depth.flatten()
+    valid_mask = d_flat > 1e-3
+    
+    if np.any(valid_mask):
+        median_d = np.median(d_flat[valid_mask])
+        # Points too far (sky/noise) are removed
+        mask = valid_mask & (d_flat < (median_d * max_depth_mult))
+    else:
+        mask = valid_mask
+        
+    points_filtered = points[mask]
+    if colors_filtered is not None:
+        colors_filtered = colors_filtered[mask]
+        
+    return points_filtered, colors_filtered
 
 def bilinear_interpolate_grid(grid, all_px, all_py, cell_width, cell_height, grid_cells_x, grid_cells_y):
     """Generic bilinear interpolation for a 2D grid."""
