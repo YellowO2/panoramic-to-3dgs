@@ -53,7 +53,7 @@ def extract_views(
 HFOV = 90.0  # Fixed FOV for DA3 slices
 
 def extract_views_for_da3(
-    input_image, output_dir, step_degrees=45, prefix="", pano_id=0
+    input_image, output_dir, step_degrees=20, prefix="", pano_id=0
 ) -> list[View]:
     """Extracts 16:9 horizon-only views optimized for Depth Anything 3."""
     equ = E2P.Equirectangular(input_image)

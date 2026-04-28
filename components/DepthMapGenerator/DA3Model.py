@@ -15,7 +15,7 @@ class DA3Model:
         print(f"Loading Depth Anything 3 model from '{model_path}' on {device}...")
         self.model = DepthAnything3.from_pretrained(model_path).to(device=device)
 
-    def process_views(self, views: list[View], dist_thresh=0.3, angle_thresh=1.5):
+    def process_views(self, views: list[View], dist_thresh=0.2, angle_thresh=1):
         """
         Runs multi-view inference, filters out views that deviate from expected
         Shared Center and Yaw/Pitch values, and returns the cleaned result.
