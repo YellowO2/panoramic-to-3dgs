@@ -44,13 +44,15 @@ class DA3Model:
                 R_w2c, t_w2c = w2c[:3, :3], w2c[:3, 3:]
                 centers.append((-R_w2c.T @ t_w2c).flatten())
                 
-                # R_w2c = R_local @ R_pano  => R_pano = R_local^T @ R_w2c
+                # R_w2c = R_local.T @ R_pano  => R_pano = R_local @ R_w2c
                 R_local = Rotation.from_euler('yx', [v.yaw, v.pitch], degrees=True).as_matrix()
-                global_rots.append(R_local.T @ R_w2c)
+                global_rots.append(R_local @ R_w2c)
             
             median_center = np.median(centers, axis=0)
-            # Use first slice as baseline rotation
-            consensus_pano_rot = global_rots[0] 
+            # Average rotations via quaternion mean
+            quats = np.array([Rotation.from_matrix(R).as_quat() for R in global_rots])
+            quats *= np.sign(quats @ quats[0])  # flip to same hemisphere
+            consensus_pano_rot = Rotation.from_quat(quats.mean(axis=0)).as_matrix()
             
             # B. Filter Outliers
             pano_keep = []
@@ -61,9 +63,9 @@ class DA3Model:
                 dist = np.linalg.norm(centers[i] - median_center)
                 
                 # 2. Rotation Deviation
-                # Calculate expected W2C rotation: R_expected = R_local @ R_pano_consensus
+                # Calculate expected W2C rotation: R_expected = R_local.T @ R_pano_consensus
                 R_local = Rotation.from_euler('yx', [v.yaw, v.pitch], degrees=True).as_matrix()
-                R_expected = R_local @ consensus_pano_rot
+                R_expected = R_local.T @ consensus_pano_rot
                 R_pred = prediction.extrinsics[idx][:3, :3]
                 
                 # Error rotation

@@ -1,36 +1,86 @@
-Installation
+# Panoramic to 3DGS
+
+## Project Goal
+Convert nearby Google Street View-style panoramas (equirectangular) into a merged 3D Gaussian Splat scene for novel view synthesis and immersive visualisation.
+
+The pipeline uses Apple SHARP to generate per-view Gaussians, and Depth Anything 3 (DA3) to produce a globally consistent point cloud that is used to clean and align those Gaussians.
+
+## Current Focus
+Getting DA3 to produce a reliable global point cloud across multiple panoramas. The DA3 outputs have pose drift and jitter across panorama slices, so `DA3Model` filters them — but that filtering logic is still being revised.
+
+## Big Picture Pipeline
+```
+Input: N nearby equirectangular panoramas
+       ↓
+  [ViewExtractor]
+  ├─ 6 SHARP views per pano  (4 horizon + 2 poles, wide FOV)
+  └─ 8 DA3 views per pano    (horizon only, 16:9, 50% overlap)
+       ↓
+  [DA3Model]  ← ACTIVE WORK
+  - Multi-view depth + camera pose inference
+  - Filter jittery/drifting predictions per pano
+  - Output: per-pano consensus center + rotation, depth maps
+       ↓
+  [SplatGenerator]
+  - Apple SHARP: RGB → Gaussians3D per view
+       ↓
+  [SplatProcessor]
+  - Align Gaussians to DA3 depth (scale correction)
+  - Apply DA3 global poses
+  - Trim by FOV, merge all splats
+       ↓
+Output: final_output.ply  (merged 3DGS)
+```
+
+## Architecture Summary
+- `datatype.py` — `View` dataclass: image path, yaw/pitch/FOV, focal length, pano_id, optional depth + splat
+- `components/ViewExtractor/` — slices equirectangular panos into perspective `View` objects (two strategies)
+- `components/DepthMapGenerator/`
+  - `DA360DepthModel` — panorama-level depth (single-pano, faster)
+  - `DA3Model` — multi-view depth + metric pose (multi-pano, current focus)
+- `components/SplatGenerator/` — wraps Apple SHARP inference
+- `components/SplatProcessor/` — model-free: depth alignment, FOV trimming, pose application, merging
+- `components/ImageCleaner/` — optional: removes people/objects via diffusion inpainting
+- `components/Saver/` — writes PLY point clouds and depth images
+- `main.py` — orchestrator; `depth_mode` toggle selects depth strategy (`'da3'`, `'da360'`, `'external'`, `None`)
+
+## Installation
+```bash
 pip install -r requirements.txt
-wget https://ml-site.cdn-apple.com/models/sharp/sharp_2572gikvuh.pt
 
-Download model
-wget https://ml-site.cdn-apple.com/models/sharp/sharp_2572gikvuh.pt
+# SHARP model
+wget https://ml-site.cdn-apple.com/models/sharp/sharp_2572gikvuh.pt -P ./models/
 
-Using the mode:
-To use a manually downloaded checkpoint, specify it with the -c flag:
-sharp predict -i /path/to/input/images -o /path/to/output/gaussians -c sharp_2572gikvuh.pt
-For our case:
-sharp predict -i ./output_views/view_0_0.jpg -o ./output_3dgs -c ./models/sharp_2572gikvuh.pt
-
-
-huggingface-cli download depth-anything/DA3NESTED-GIANT-LARGE-1.1 \
-  --local-dir ./da3_model
+# DA3 model
+huggingface-cli download depth-anything/DA3NESTED-GIANT-LARGE-1.1 --local-dir ./models/models--depth-anything--DA3NESTED-GIANT-LARGE-1.1
 pip install git+https://github.com/ByteDance-Seed/Depth-Anything-3.git
-to use depth model:
-da3 auto ./output_views     --export-format glb     --export-dir ./output_depth     --model-dir ./models/models--depth-anything--DA3-LARGE-1.1/snapshots/0e109ae307c5982f319a67cf6f9f99ccdc0ec97c
-da3 auto ./output_views     --export-format glb     --export-dir ./output_depth     --model-dir ./models/models--depth-anything--DA3NESTED-GIANT-LARGE-1.1/snapshots/b2359bdf726fb44ef62acca04d629dcf158053e7
+```
 
+## Running
+Configure paths and panorama inputs in `main.py`, then:
+```bash
+python main.py
+```
 
+Key `run_panoramic_pipeline` parameters:
+- `panorama_paths` — list of input pano image paths
+- `output_dir` — where to write outputs
+- `depth_mode` — `'da3'` (recommended), `'da360'`, `'external'`, or `None`
+- `model_paths` — dict with keys `'da360'`, `'da3'`, `'sharp'`
 
-da3 auto ./all_views     --export-format glb     --export-dir ./output_depth     --model-dir ./models/models--depth-anything--DA3NESTED-GIANT-LARGE-1.1/snapshots/b2359bdf726fb44ef62acca04d629dcf158053e7
+## Output Structure
+```
+output_dir/
+├── views_pano_i_sharp/       # 6 SHARP perspective slices
+├── views_pano_i_da3/         # 8 DA3 perspective slices
+├── gs/                        # per-view intermediate PLY files
+└── final_output.ply           # merged 3D Gaussian splat
+```
 
-
-  Architectural Summary:
-   - datatype.py: Defines View objects, which is a data type which contains necessary info to generate and process a splat
-   - components/DepthMapGenerator/:
-       - DA360DepthModel: Handles panorama-level depth.
-       - DA3Model: Handles multi-view depth and pose inference.
-   - components/ViewExtractor/: Slices the panorama (and optional depth map) into standard View objects.
-   - components/SplatGenerator/: Generates 3DGS from View images.
-   - components/SplatProcessor/: A "model-free" component that aligns and merges splats based on whatever depth or extrinsics are found in
-     the View objects.
-   - main.py: Clean, readable orchestrator with a simple depth_mode toggle.
+## Manual DA3 CLI (reference)
+```bash
+da3 auto ./all_views \
+  --export-format glb \
+  --export-dir ./output_depth \
+  --model-dir ./models/models--depth-anything--DA3NESTED-GIANT-LARGE-1.1/snapshots/b2359bdf726fb44ef62acca04d629dcf158053e7
+```
