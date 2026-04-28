@@ -62,13 +62,13 @@ def run_panoramic_pipeline(
     if depth_mode == 'da3':
         print("--- Step: DA3 Global Pose Processing ---")
         da3 = DA3Model(model_paths['da3'])
-        # DA3 uses the optimized 16:9 slices
-        da3_result = da3.process_views(all_da3_views) 
+        # DA3 uses the optimized 16:9 slices and returns only "good" ones
+        filtered_da3_views, da3_result = da3.process_views(all_da3_views) 
         pano_poses = da3_result.pano_poses
 
-        # Save DA3 Debug PCD (Verifies the 16:9 consistency)
+        # Save DA3 Debug PCD (Verifies the cleaned scene)
         print("--- Step: Saving DA3 Debug Consistency PCD ---")
-        da3_pts, da3_cols = backproject_views_to_pcd(all_da3_views, da3_result)
+        da3_pts, da3_cols = backproject_views_to_pcd(filtered_da3_views, da3_result)
         if da3_pts is not None:
             saver.save_point_cloud(da3_pts, os.path.join(output_dir, "da3_debug_consistency.ply"), colors=da3_cols)
 
