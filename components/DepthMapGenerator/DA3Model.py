@@ -15,7 +15,7 @@ class DA3Model:
         print(f"Loading Depth Anything 3 model from '{model_path}' on {device}...")
         self.model = DepthAnything3.from_pretrained(model_path).to(device=device)
 
-    def process_views(self, views: list[View], dist_thresh=0.08, angle_thresh=5.0):
+    def process_views(self, views: list[View], dist_thresh=0.3, angle_thresh=1.5):
         """
         Runs multi-view inference, filters out views that deviate from expected
         Shared Center and Yaw/Pitch values, and returns the cleaned result.
@@ -38,14 +38,16 @@ class DA3Model:
             centers = []
             global_rots = [] # Store predicted R_pano candidates
             
+            R_locals = []
             for idx in indices:
                 v = views[idx]
                 w2c = prediction.extrinsics[idx]
                 R_w2c, t_w2c = w2c[:3, :3], w2c[:3, 3:]
                 centers.append((-R_w2c.T @ t_w2c).flatten())
-                
+
                 # R_w2c = R_local.T @ R_pano  => R_pano = R_local @ R_w2c
                 R_local = Rotation.from_euler('yx', [v.yaw, v.pitch], degrees=True).as_matrix()
+                R_locals.append(R_local)
                 global_rots.append(R_local @ R_w2c)
             
             median_center = np.median(centers, axis=0)
@@ -81,10 +83,13 @@ class DA3Model:
             if pano_keep:
                 keep_indices.extend(pano_keep)
                 final_pano_poses[pano_id] = {'center': median_center, 'rotation': consensus_pano_rot}
-                # Force strictly shared center for the kept ones
-                for idx in pano_keep:
-                    R = prediction.extrinsics[idx][:3, :3]
-                    prediction.extrinsics[idx, :3, 3] = (-R @ median_center.reshape(3, 1)).flatten()
+                # Snap kept views to consensus pose (shared center + consistent rotation)
+                for i, idx in enumerate(indices):
+                    if idx not in pano_keep:
+                        continue
+                    R_snapped = R_locals[i].T @ consensus_pano_rot
+                    prediction.extrinsics[idx, :3, :3] = R_snapped
+                    prediction.extrinsics[idx, :3, 3] = (-R_snapped @ median_center.reshape(3, 1)).flatten()
 
         # 3. Create filtered result
         keep_indices = sorted(keep_indices)

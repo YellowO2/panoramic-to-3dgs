@@ -72,22 +72,22 @@ def run_panoramic_pipeline(
         if da3_pts is not None:
             saver.save_point_cloud(da3_pts, os.path.join(output_dir, "da3_debug_consistency.ply"), colors=da3_cols)
 
-    # 5. Generate Splats (SHARP)
-    print("--- Step: Splat Generation (SHARP) ---")
-    gs_generator = SplatGenerator(model_paths['sharp'])
-    # SHARP uses the standard views
-    gaussian_list = gs_generator.generate_from_views(all_sharp_views, output_dir=os.path.join(output_dir, "gs"))
+    # # 5. Generate Splats (SHARP)
+    # print("--- Step: Splat Generation (SHARP) ---")
+    # gs_generator = SplatGenerator(model_paths['sharp'])
+    # # SHARP uses the standard views
+    # gaussian_list = gs_generator.generate_from_views(all_sharp_views, output_dir=os.path.join(output_dir, "gs"))
 
-    # 6. Process and Merge
-    print("--- Step: Splat Processing (Alignment/Merge) ---")
-    processor = SplatProcessor()
-    # Processor uses the poses from DA3 (via pano_id) to position SHARP splats
-    merged_splat = processor.process(all_sharp_views, gaussian_list, pano_poses=pano_poses)
+    # # 6. Process and Merge
+    # print("--- Step: Splat Processing (Alignment/Merge) ---")
+    # processor = SplatProcessor()
+    # # Processor uses the poses from DA3 (via pano_id) to position SHARP splats
+    # merged_splat = processor.process(all_sharp_views, gaussian_list, pano_poses=pano_poses)
     
-    # 7. Save Final Result
-    final_path = os.path.join(output_dir, "final_output.ply")
-    save_ply(merged_splat, f_px=all_sharp_views[0].focal_px, image_shape=(all_sharp_views[0].height, all_sharp_views[0].width), path=final_path)
-    print(f"Pipeline complete: {final_path}")
+    # # 7. Save Final Result
+    # final_path = os.path.join(output_dir, "final_output.ply")
+    # save_ply(merged_splat, f_px=all_sharp_views[0].focal_px, image_shape=(all_sharp_views[0].height, all_sharp_views[0].width), path=final_path)
+    # print(f"Pipeline complete: {final_path}")
 
 if __name__ == '__main__':
     models = {'da360': "models/DA360_large.pth", 'da3': "models/models--depth-anything--DA3NESTED-GIANT-LARGE-1.1/snapshots/b2359bdf726fb44ef62acca04d629dcf158053e7", 'sharp': "models/sharp_2572gikvuh.pt"}
