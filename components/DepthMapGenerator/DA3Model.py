@@ -51,7 +51,7 @@ class DA3Model:
             median_center = np.median(centers, axis=0)
             # Average rotations via quaternion mean
             quats = np.array([Rotation.from_matrix(R).as_quat() for R in global_rots])
-            quats *= np.sign(quats @ quats[0])  # flip to same hemisphere
+            quats *= np.sign(quats @ quats[0])[:, None]  # flip to same hemisphere
             consensus_pano_rot = Rotation.from_quat(quats.mean(axis=0)).as_matrix()
             
             # B. Filter Outliers
