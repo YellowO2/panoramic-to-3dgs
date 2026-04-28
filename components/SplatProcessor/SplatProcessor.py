@@ -142,19 +142,23 @@ class SplatProcessor:
 
         for view, splat in zip(views, splats_list):
             R_local = Rotation.from_euler('yx', [view.yaw, view.pitch], degrees=True).as_matrix()
-            center = pano_poses[view.pano_id]['center'] if (pano_poses and view.pano_id in pano_poses) else None
+            pano_data = pano_poses.get(view.pano_id) if pano_poses else None
+            center = pano_data['center'] if pano_data else None
+            pano_rot = pano_data['rotation'] if pano_data else None
+            # Full C2W rotation: pano_rot.T rotates from panorama-local into DA3 world
+            R_c2w = pano_rot.T @ R_local if pano_rot is not None else R_local
 
             # 1. Depth alignment
-            ref_depth = None
-            if da3_world_pts is not None and center is not None:
-                ref_depth = project_world_cloud_to_view(da3_world_pts, center, R_local, view)
-            elif view.depth is not None:
-                ref_depth = view.depth
+            # ref_depth = None
+            # if da3_world_pts is not None and center is not None:
+            #     ref_depth = project_world_cloud_to_view(da3_world_pts, center, R_c2w, view)
+            # elif view.depth is not None:
+            #     ref_depth = view.depth
 
-            if ref_depth is not None:
-                splat = self.align_gaussians_to_depth(
-                    splat, ref_depth, view.focal_px, view.focal_px, int(view.width), int(view.height)
-                )
+            # if ref_depth is not None:
+            #     splat = self.align_gaussians_to_depth(
+            #         splat, ref_depth, view.focal_px, view.focal_px, int(view.width), int(view.height)
+            #     )
 
             # 2. Trim edges
             splat = trim_by_fov(splat, hfov_limit=view.hfov - 6.0)
@@ -162,7 +166,7 @@ class SplatProcessor:
             # 3. Apply global pose (C2W)
             if center is not None:
                 c2w = np.eye(4)
-                c2w[:3, :3] = R_local
+                c2w[:3, :3] = R_c2w
                 c2w[:3, 3] = center
                 splat = apply_transform(splat, torch.tensor(c2w[:3, :], dtype=torch.float32, device=splat.mean_vectors.device))
             else:
