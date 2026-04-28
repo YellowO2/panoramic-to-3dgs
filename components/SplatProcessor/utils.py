@@ -118,8 +118,8 @@ def project_world_cloud_to_view(world_pts: np.ndarray, center: np.ndarray, R_loc
     z = pts_cam[:, 2]
 
     in_bounds = (u >= 0) & (u < view.width) & (v >= 0) & (v < view.height)
-    ui = np.round(u[in_bounds]).astype(np.int32)
-    vi = np.round(v[in_bounds]).astype(np.int32)
+    ui = np.clip(np.round(u[in_bounds]).astype(np.int32), 0, int(view.width) - 1)
+    vi = np.clip(np.round(v[in_bounds]).astype(np.int32), 0, int(view.height) - 1)
     zi = z[in_bounds]
 
     depth_map = np.full((int(view.height), int(view.width)), np.inf, dtype=np.float32)
