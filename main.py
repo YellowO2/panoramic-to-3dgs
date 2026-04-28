@@ -50,7 +50,7 @@ def run_panoramic_pipeline(
         # A. Extract SHARP views (for splats)
         sharp_dir = os.path.join(output_dir, f"views_pano_{i}_sharp")
         os.makedirs(sharp_dir, exist_ok=True)
-        all_sharp_views.extend(extract_views(current_image, sharp_dir, overlap_degrees=9, slice_count=4, prefix=f"pano_{i}_", panorama_depth=pano_depth, pano_id=i)[:-8]) # use less slice now as dont have enough memory
+        all_sharp_views.extend(extract_views(current_image, sharp_dir, overlap_degrees=9, slice_count=4, prefix=f"pano_{i}_", panorama_depth=pano_depth, pano_id=i)) 
 
         # B. Extract DA3 views (for global poses)
         da3_dir = os.path.join(output_dir, f"views_pano_{i}_da3")
@@ -76,6 +76,7 @@ def run_panoramic_pipeline(
     # 5. Generate Splats (SHARP)
     print("--- Step: Splat Generation (SHARP) ---")
     gs_generator = SplatGenerator(model_paths['sharp'])
+    all_sharp_views = all_sharp_views[:-6] #use less slice now as not enough ram
     gaussian_list = gs_generator.generate_from_views(all_sharp_views, output_dir=os.path.join(output_dir, "gs"))
 
     # 6. Process and Merge
