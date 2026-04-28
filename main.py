@@ -55,7 +55,7 @@ def run_panoramic_pipeline(
         # B. Extract DA3 views (for global poses)
         da3_dir = os.path.join(output_dir, f"views_pano_{i}_da3")
         os.makedirs(da3_dir, exist_ok=True)
-        all_da3_views.extend(extract_views_for_da3(current_image, da3_dir, slice_count=8, prefix=f"pano_{i}_", pano_id=i))
+        all_da3_views.extend(extract_views_for_da3(current_image, da3_dir, prefix=f"pano_{i}_", pano_id=i))
 
     # 4. Global Multi-View Depth/Pose Generation (DA3)
     pano_poses = None
