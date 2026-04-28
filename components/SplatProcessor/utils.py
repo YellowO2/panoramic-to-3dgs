@@ -10,7 +10,7 @@ from sharp.utils.gaussians import Gaussians3D, apply_transform
 def backproject_views_to_pcd(views: list, da3_result):
     """
     Back-projects processed views into world space for debugging.
-    'views' should be the same list of views passed to da3.process_views().
+    Uses the snapped extrinsics directly from DA3 result.
     """
     all_points = []
     all_colors = []
@@ -19,30 +19,30 @@ def backproject_views_to_pcd(views: list, da3_result):
     if pred is None: return None, None
 
     for i, v in enumerate(views):
-        # Use DA3 predicted parameters directly
+        # 1. Geometry from DA3
         K = pred.intrinsics[i]
-        w2c = pred.extrinsics[i]
         depth = pred.depth[i]
+        # Use the extrinsics we already snapped in DA3Model
+        w2c = pred.extrinsics[i]
         conf = pred.conf[i] if pred.conf is not None else None
-
+        
         h, w = depth.shape
         us, vs = np.meshgrid(np.arange(w), np.arange(h))
         pix = np.stack([us, vs, np.ones_like(us)], axis=-1).reshape(-1, 3)
         
         valid = np.isfinite(depth) & (depth > 0)
         if conf is not None:
-            # DA3 default confidence filtering
             valid &= (conf >= np.percentile(conf, 40))
         
         vidx = np.flatnonzero(valid.reshape(-1))
         if len(vidx) == 0: continue
         
-        # 1. Backproject to Camera Space: rays * depth
+        # 2. Backproject to Camera Space
         K_inv = np.linalg.inv(K)
         rays = (K_inv @ pix[vidx].T).T
         pts_cam = rays * depth.flatten()[vidx][:, None]
         
-        # 2. Transform to World Space
+        # 3. Transform to World Space (using C2W)
         w2c_homo = np.eye(4)
         w2c_homo[:3, :4] = w2c[:3, :4]
         c2w = np.linalg.inv(w2c_homo)
@@ -50,13 +50,12 @@ def backproject_views_to_pcd(views: list, da3_result):
         pts_world = (c2w[:3, :3] @ pts_cam.T).T + c2w[:3, 3]
         all_points.append(pts_world)
         
-        # 3. Colors (Load from disk as they aren't in the object)
+        # 4. Colors
         if v.path and os.path.exists(v.path):
             img_bgr = cv2.imread(v.path)
             if img_bgr is not None:
                 img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-                if img_rgb.shape[:2] != (h, w): 
-                    img_rgb = cv2.resize(img_rgb, (w, h))
+                if img_rgb.shape[:2] != (h, w): img_rgb = cv2.resize(img_rgb, (w, h))
                 all_colors.append(img_rgb.reshape(-1, 3)[vidx] / 255.0)
             
     if not all_points: return None, None
