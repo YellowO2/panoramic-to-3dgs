@@ -8,6 +8,7 @@ from components.SplatProcessor.utils import (
     bilinear_interpolate_grid,
     project_gaussians_to_2d,
     compute_per_point_scales,
+    project_world_cloud_to_view,
     rotate_to_pose,
     trim_by_fov,
     merge
@@ -135,40 +136,38 @@ class SplatProcessor:
             raw_scale_ok, valid, ok, median_scale
         )
 
-    def process(self, views: list[View], splats_list: list[Gaussians3D], pano_poses: dict = None) -> Gaussians3D:
+    def process(self, views: list[View], splats_list: list[Gaussians3D], pano_poses: dict = None, da3_world_pts: np.ndarray = None) -> Gaussians3D:
         """Main processing loop: align, trim, pose, and merge."""
         processed_splats = []
-        
-        for i, (view, splat) in enumerate(zip(views, splats_list)):
-            # 1. Alignment (if depth map exists in View)
-            if view.depth is not None:
+
+        for view, splat in zip(views, splats_list):
+            R_local = Rotation.from_euler('yx', [view.yaw, view.pitch], degrees=True).as_matrix()
+            center = pano_poses[view.pano_id]['center'] if (pano_poses and view.pano_id in pano_poses) else None
+
+            # 1. Depth alignment
+            ref_depth = None
+            if da3_world_pts is not None and center is not None:
+                ref_depth = project_world_cloud_to_view(da3_world_pts, center, R_local, view)
+            elif view.depth is not None:
+                ref_depth = view.depth
+
+            if ref_depth is not None:
                 splat = self.align_gaussians_to_depth(
-                    splat, view.depth, view.focal_px, view.focal_px, int(view.width), int(view.height)
+                    splat, ref_depth, view.focal_px, view.focal_px, int(view.width), int(view.height)
                 )
 
             # 2. Trim edges
-            hfov_keep = view.hfov - 6.0
-            splat = trim_by_fov(splat, hfov_limit=hfov_keep)
-            
-            # 3. Apply Global Pose
-            if pano_poses and view.pano_id in pano_poses:
-                # Use predicted shared center + manual rotation for consistency
-                center = pano_poses[view.pano_id] # (3,)
-                
-                # Manual rotation from yaw/pitch (X-right, Y-down, Z-forward)
-                rot = Rotation.from_euler('yx', [view.yaw, view.pitch], degrees=True).as_matrix()
-                # C2W = [R | center]
+            splat = trim_by_fov(splat, hfov_limit=view.hfov - 6.0)
+
+            # 3. Apply global pose (C2W)
+            if center is not None:
                 c2w = np.eye(4)
-                c2w[:3, :3] = rot
+                c2w[:3, :3] = R_local
                 c2w[:3, 3] = center
-                
-                device = splat.mean_vectors.device
-                c2w_tensor = torch.tensor(c2w[:3, :], dtype=torch.float32, device=device)
-                splat = apply_transform(splat, c2w_tensor)
+                splat = apply_transform(splat, torch.tensor(c2w[:3, :], dtype=torch.float32, device=splat.mean_vectors.device))
             else:
-                # Fallback to local origin rotation
                 splat = rotate_to_pose(splat, yaw=view.yaw, pitch=view.pitch)
 
             processed_splats.append(splat)
-            
+
         return merge(processed_splats)

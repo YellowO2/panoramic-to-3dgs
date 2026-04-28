@@ -99,6 +99,35 @@ def panoramic_depth_to_pcd(
         
     return points[mask], (colors_filtered[mask] if colors_filtered is not None else None)
 
+def project_world_cloud_to_view(world_pts: np.ndarray, center: np.ndarray, R_local: np.ndarray, view) -> np.ndarray:
+    """
+    Projects a world-space point cloud into a single view's depth buffer.
+    Returns a (H, W) depth map in metres; 0 means no data.
+    Minimum-Z (closest surface) wins when multiple points land on the same pixel.
+    """
+    R_w2c = R_local.T
+    pts_cam = (R_w2c @ (world_pts - center).T).T  # (N, 3)
+
+    valid = pts_cam[:, 2] > 0.1
+    pts_cam = pts_cam[valid]
+    if len(pts_cam) == 0:
+        return np.zeros((int(view.height), int(view.width)), dtype=np.float32)
+
+    u = (pts_cam[:, 0] / pts_cam[:, 2]) * view.focal_px + view.width / 2.0
+    v = (pts_cam[:, 1] / pts_cam[:, 2]) * view.focal_px + view.height / 2.0
+    z = pts_cam[:, 2]
+
+    in_bounds = (u >= 0) & (u < view.width) & (v >= 0) & (v < view.height)
+    ui = np.round(u[in_bounds]).astype(np.int32)
+    vi = np.round(v[in_bounds]).astype(np.int32)
+    zi = z[in_bounds]
+
+    depth_map = np.full((int(view.height), int(view.width)), np.inf, dtype=np.float32)
+    np.minimum.at(depth_map, (vi, ui), zi)
+    depth_map[depth_map == np.inf] = 0.0
+    return depth_map
+
+
 def bilinear_interpolate_grid(grid, all_px, all_py, cell_width, cell_height, grid_cells_x, grid_cells_y):
     gx_cont, gy_cont = all_px / cell_width - 0.5, all_py / cell_height - 0.5
     gx0, gy0 = np.clip(np.floor(gx_cont).astype(np.int32), 0, grid_cells_x - 1), np.clip(np.floor(gy_cont).astype(np.int32), 0, grid_cells_y - 1)
