@@ -76,7 +76,7 @@ def run_panoramic_pipeline(
     # 5. Generate Splats (SHARP)
     print("--- Step: Splat Generation (SHARP) ---")
     gs_generator = SplatGenerator(model_paths['sharp'])
-    all_sharp_views = all_sharp_views[:-6] #use less slice now as not enough ram
+    all_sharp_views = all_sharp_views[:-4] #use less slice now as not enough ram
     gaussian_list = gs_generator.generate_from_views(all_sharp_views, output_dir=os.path.join(output_dir, "gs"))
 
     # 6. Process and Merge

@@ -16,7 +16,7 @@ from components.SplatProcessor.utils import (
 )
 
 class SplatProcessor:
-    MAX_DEPTH = 20.0  # metres; increase to keep more background, decrease to cut sky/far objects
+    MAX_DEPTH = 15.0  # metres; increase to keep more background, decrease to cut sky/far objects
 
     def __init__(self, grid_resolution=8, detail_weight=0.0):
         self.grid_resolution = grid_resolution
