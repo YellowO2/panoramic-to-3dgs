@@ -162,7 +162,7 @@ class SplatProcessor:
         )
         if raw_scale_ok is None or median_scale <= 0:
             return gaussians
-
+        print(f"Global scale factor: {median_scale:.3f}")
         return scale_gaussians(gaussians, median_scale)
 
     def process(self, views: list[View], splats_list: list[Gaussians3D], pano_poses: dict = None, da3_world_pts: np.ndarray = None) -> Gaussians3D:

@@ -152,9 +152,9 @@ def compute_per_point_scales(pixel_x, pixel_y, radial, depth_z, reference_depth,
     ok = np.isfinite(ref_depth_sampled) & (ref_depth_sampled > 1e-6) & (current_depth > 1e-6)
     if int(ok.sum()) < 64: return None, 1.0, None
     raw_scale_ok = ref_depth_sampled[ok].astype(np.float32) / current_depth[ok]
-    lo, hi = np.quantile(raw_scale_ok, [0.05, 0.95])
+    lo, hi = np.quantile(raw_scale_ok, [0.10, 0.90])
     trimmed = raw_scale_ok[(raw_scale_ok >= lo) & (raw_scale_ok <= hi)]
-    return raw_scale_ok, float(np.median(trimmed)) if trimmed.size > 0 else float(np.median(raw_scale_ok)), ok
+    return raw_scale_ok, float(np.mean(trimmed)) if trimmed.size > 0 else float(np.mean(raw_scale_ok)), ok
 
 def scale_gaussians(gaussians: Gaussians3D, scale: float) -> Gaussians3D:
     s = torch.tensor(scale, dtype=torch.float32, device=gaussians.mean_vectors.device)
