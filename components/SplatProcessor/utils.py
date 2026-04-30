@@ -161,6 +161,11 @@ def rotate_to_pose(gaussians: Gaussians3D, yaw: float, pitch: float) -> Gaussian
     transform = torch.cat([torch.tensor(rotation.as_matrix(), dtype=torch.float32).to(gaussians.mean_vectors.device), torch.zeros((3, 1)).to(gaussians.mean_vectors.device)], dim=1)
     return apply_transform(gaussians, transform)
 
+def trim_by_max_depth(gaussians: Gaussians3D, max_depth: float) -> Gaussians3D:
+    radial = torch.norm(gaussians.mean_vectors[0], dim=1)
+    mask = radial <= max_depth
+    return Gaussians3D(mean_vectors=gaussians.mean_vectors[:, mask, :], singular_values=gaussians.singular_values[:, mask, :], quaternions=gaussians.quaternions[:, mask, :], colors=gaussians.colors[:, mask, :], opacities=gaussians.opacities[:, mask])
+
 def trim_by_fov(gaussians, hfov_limit):
     positions = gaussians.mean_vectors
     x, z = positions[0][:, 0], positions[0][:, 2]

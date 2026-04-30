@@ -11,10 +11,13 @@ from components.SplatProcessor.utils import (
     project_world_cloud_to_view,
     rotate_to_pose,
     trim_by_fov,
+    trim_by_max_depth,
     merge
 )
 
 class SplatProcessor:
+    MAX_DEPTH = 20.0  # metres; increase to keep more background, decrease to cut sky/far objects
+
     def __init__(self, grid_resolution=8, detail_weight=0.0):
         self.grid_resolution = grid_resolution
         self.detail_weight = detail_weight
@@ -160,8 +163,9 @@ class SplatProcessor:
             #         splat, ref_depth, view.focal_px, view.focal_px, int(view.width), int(view.height)
             #     )
 
-            # 2. Trim edges
+            # 2. Trim edges and far points (must happen before pose, while still in camera space)
             splat = trim_by_fov(splat, hfov_limit=view.hfov - 6.0)
+            splat = trim_by_max_depth(splat, self.MAX_DEPTH)
 
             # 3. Apply global pose (C2W)
             if center is not None:
