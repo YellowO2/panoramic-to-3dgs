@@ -11,7 +11,7 @@ from components.SplatProcessor.utils import (
     project_world_cloud_to_view,
     rotate_to_pose,
     scale_gaussians,
-    measure_near_edge_width,
+    measure_nearest_z,
     trim_by_fov,
     trim_by_max_depth,
     merge
@@ -168,27 +168,28 @@ class SplatProcessor:
 
     def align_splats_by_near_edge(self, views: list[View], splats_list: list[Gaussians3D]) -> list[Gaussians3D]:
         """
-        Scale each splat so all bottom-edge widths match the median across slices.
+        Scale each splat so all nearest-Z distances match the median across slices.
+        Uses 0.1th percentile Z (≈ ground distance) as the scale proxy.
         Assumes trim_by_max_depth has already been applied (camera space, before pose).
         """
-        widths = []
+        nearest_zs = []
         for view, splat in zip(views, splats_list):
-            w = measure_near_edge_width(splat)
-            widths.append(w)
-            print(f"  Near edge width [{view.yaw:+.0f}°]: {f'{w:.3f}' if w is not None else 'N/A'}")
+            z = measure_nearest_z(splat)
+            nearest_zs.append(z)
+            print(f"  Nearest Z [{view.yaw:+.0f}°]: {f'{z:.3f}' if z is not None else 'N/A'}")
 
-        valid_widths = [w for w in widths if w is not None]
-        if not valid_widths:
-            print("Bottom edge alignment: no valid measurements, skipping.")
+        valid_zs = [z for z in nearest_zs if z is not None]
+        if not valid_zs:
+            print("Near edge alignment: no valid measurements, skipping.")
             return splats_list
 
-        target = float(np.median(valid_widths))
-        print(f"Near edge target width: {target:.3f}")
+        target = float(np.median(valid_zs))
+        print(f"Near edge target Z: {target:.3f}")
 
         result = []
-        for splat, w in zip(splats_list, widths):
-            if w is not None and w > 1e-6:
-                result.append(scale_gaussians(splat, target / w))
+        for splat, z in zip(splats_list, nearest_zs):
+            if z is not None and z > 1e-6:
+                result.append(scale_gaussians(splat, target / z))
             else:
                 result.append(splat)
         return result

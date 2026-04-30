@@ -156,27 +156,19 @@ def compute_per_point_scales(pixel_x, pixel_y, radial, depth_z, reference_depth,
     trimmed = raw_scale_ok[(raw_scale_ok >= lo) & (raw_scale_ok <= hi)]
     return raw_scale_ok, float(np.mean(trimmed)) if trimmed.size > 0 else float(np.mean(raw_scale_ok)), ok
 
-def measure_near_edge_width(gaussians: Gaussians3D, near_percentile: float = 5.0) -> float:
+def measure_nearest_z(gaussians: Gaussians3D) -> float:
     """
-    Measures the horizontal width of the nearest geometry in a slice (top-down view).
-    Filters to the closest Gaussians by Z, then measures their X spread.
-    This chord width forms the side of the polygon when slices are tiled around 360°.
-    Returns the 10th-90th percentile X spread, or None if too few points.
+    Returns the 0.1th percentile Z of all Gaussians as a proxy for the nearest surface distance.
+    In street panoramas the ground is almost always visible, so this ≈ ground distance,
+    which should be consistent across slices when scales are correct.
+    Returns None if too few points.
     """
     mv = gaussians.mean_vectors[0].detach().cpu().numpy()
-    x, z = mv[:, 0], mv[:, 2]
-    valid = z > 0.1
-    x, z = x[valid], z[valid]
-    if len(x) < 32:
+    z = mv[:, 2]
+    z = z[z > 0.01]
+    if len(z) < 16:
         return None
-
-    z_thresh = np.percentile(z, near_percentile)
-    near = z <= z_thresh
-    if int(near.sum()) < 16:
-        return None
-
-    x_near = x[near]
-    return float(np.percentile(x_near, 90) - np.percentile(x_near, 10))
+    return float(np.percentile(z, 0.1))
 
 def scale_gaussians(gaussians: Gaussians3D, scale: float) -> Gaussians3D:
     s = torch.tensor(scale, dtype=torch.float32, device=gaussians.mean_vectors.device)
