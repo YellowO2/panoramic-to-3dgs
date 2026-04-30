@@ -72,6 +72,8 @@ def run_panoramic_pipeline(
         da3_pts, da3_cols, da3_pts_per_pano = backproject_views_to_pcd(filtered_da3_views, da3_result)
         if da3_pts is not None:
             saver.save_point_cloud(da3_pts, os.path.join(output_dir, "da3_debug_consistency.ply"), colors=da3_cols)
+            for pid, pts in da3_pts_per_pano.items():
+                saver.save_point_cloud(pts, os.path.join(output_dir, f"da3_debug_pano_{pid}.ply"))
 
         del da3, da3_result, filtered_da3_views, da3_cols, da3_pts
         torch.cuda.empty_cache()
@@ -86,12 +88,18 @@ def run_panoramic_pipeline(
     # 6. Process and Merge
     print("--- Step: Splat Processing (Alignment/Merge) ---")
     processor = SplatProcessor()
-    merged_splat = processor.process(all_sharp_views, gaussian_list, pano_poses=pano_poses, da3_world_pts=da3_pts_per_pano, scale_mode="da3")
+    merged_splat, per_pano_splats = processor.process(all_sharp_views, gaussian_list, pano_poses=pano_poses, da3_world_pts=da3_pts_per_pano, scale_mode="da3")
 
     # 7. Save Final Result
+    ref_view = all_sharp_views[0]
     final_path = os.path.join(output_dir, "final_output.ply")
-    save_ply(merged_splat, f_px=all_sharp_views[0].focal_px, image_shape=(all_sharp_views[0].height, all_sharp_views[0].width), path=final_path)
+    save_ply(merged_splat, f_px=ref_view.focal_px, image_shape=(ref_view.height, ref_view.width), path=final_path)
     print(f"Pipeline complete: {final_path}")
+
+    for pid, splat in per_pano_splats.items():
+        pano_path = os.path.join(output_dir, f"output_pano_{pid}.ply")
+        save_ply(splat, f_px=ref_view.focal_px, image_shape=(ref_view.height, ref_view.width), path=pano_path)
+        print(f"Saved pano {pid}: {pano_path}")
 
 if __name__ == '__main__':
     models = {'da360': "models/DA360_large.pth", 'da3': "models/models--depth-anything--DA3NESTED-GIANT-LARGE-1.1/snapshots/b2359bdf726fb44ef62acca04d629dcf158053e7", 'sharp': "models/sharp_2572gikvuh.pt"}

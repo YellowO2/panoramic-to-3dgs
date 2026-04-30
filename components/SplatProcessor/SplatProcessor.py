@@ -189,52 +189,79 @@ class SplatProcessor:
         so relative structure is preserved. Gaussians beyond diagonal/4 get global median.
         """
         # --- Step 1: extract DA3 anchor pixels from the sparse depth map ---
-        da3_v, da3_u = np.where(reference_depth > 0)
-        da3_z = reference_depth[da3_v, da3_u].astype(np.float32)
-        if len(da3_u) < 4:
+        da3_v_full, da3_u_full = np.where(reference_depth > 0)
+        n_anchors = len(da3_u_full)
+        print(f"  [Voronoi] DA3 anchors in view: {n_anchors}")
+        if n_anchors < 4:
+            print(f"  [Voronoi] Too few anchors, skipping alignment.")
             return gaussians
 
-        # --- Step 2: project Gaussians to 2D (use Z-depth to match reference_depth) ---
+        # --- Step 2: project Gaussians to 2D ---
         pixel_x, pixel_y, depth_z, _, valid = project_gaussians_to_2d(
             gaussians, focal_x_px, focal_y_px, image_width, image_height
         )
-        if int(valid.sum()) < 16:
+        n_valid = int(valid.sum())
+        print(f"  [Voronoi] Valid Gaussians: {n_valid} / {len(pixel_x)}")
+        if n_valid < 16:
             return gaussians
 
-        # --- Step 3: pre-compute Voronoi label map via distance transform ---
-        # For every pixel, find the nearest DA3 anchor in O(H*W) then look up in O(1)
-        H, W = int(image_height), int(image_width)
-        max_dist = math.sqrt(W ** 2 + H ** 2) / 4.0
+        # --- Step 3: choose grid resolution from anchor density and aspect ratio ---
+        aspect = image_width / image_height
+        grid_w = int(min(math.sqrt(n_anchors * aspect), image_width))
+        grid_h = int(min(math.sqrt(n_anchors / aspect), image_height))
+        grid_w, grid_h = max(grid_w, 4), max(grid_h, 4)
+        print(f"  [Voronoi] Grid: {grid_w}x{grid_h} (view: {image_width}x{image_height})")
 
-        anchor_mask = np.ones((H, W), dtype=bool)
-        anchor_mask[da3_v, da3_u] = False  # anchor pixels are "features"
+        # scale anchor coords to grid space
+        sx, sy = grid_w / image_width, grid_h / image_height
+        da3_u_g = np.clip((da3_u_full * sx).astype(np.int32), 0, grid_w - 1)
+        da3_v_g = np.clip((da3_v_full * sy).astype(np.int32), 0, grid_h - 1)
+        # rebuild reference depth on the grid (min-z wins per cell)
+        grid_depth = np.zeros((grid_h, grid_w), dtype=np.float32)
+        np.maximum.at(grid_depth, (da3_v_g, da3_u_g), reference_depth[da3_v_full, da3_u_full])
+
+        # --- Step 4: pre-compute Voronoi label map via distance transform on the small grid ---
+        anchor_mask = grid_depth == 0
         dist_map, nearest = distance_transform_edt(anchor_mask, return_indices=True)
-        # nearest[0] = row, nearest[1] = col of nearest anchor for every pixel
+        max_dist_grid = math.sqrt(grid_w ** 2 + grid_h ** 2) / 4.0
 
-        # --- Step 4: look up anchor ref-depth and compute per-Gaussian raw scale ---
+        # --- Step 5: look up anchor ref-depth for each valid Gaussian ---
         valid_idx = np.where(valid)[0]
-        valid_px = np.clip(np.round(pixel_x[valid_idx]).astype(np.int32), 0, W - 1)
-        valid_py = np.clip(np.round(pixel_y[valid_idx]).astype(np.int32), 0, H - 1)
+        valid_px_g = np.clip((pixel_x[valid_idx] * sx).astype(np.int32), 0, grid_w - 1)
+        valid_py_g = np.clip((pixel_y[valid_idx] * sy).astype(np.int32), 0, grid_h - 1)
         valid_dz = np.clip(depth_z[valid_idx], 1e-6, None)
 
-        anchor_row = nearest[0, valid_py, valid_px]
-        anchor_col = nearest[1, valid_py, valid_px]
-        ref_z = reference_depth[anchor_row, anchor_col].astype(np.float32)
+        anchor_row = nearest[0, valid_py_g, valid_px_g]
+        anchor_col = nearest[1, valid_py_g, valid_px_g]
+        ref_z = grid_depth[anchor_row, anchor_col].astype(np.float32)
         raw_scales = ref_z / valid_dz
 
-        # --- Step 5: cell-wise median (group by anchor pixel) ---
-        anchor_flat = anchor_row * W + anchor_col  # unique id per anchor
-        unique_anchors, inverse = np.unique(anchor_flat, return_inverse=True)
-        cell_medians = np.array([np.median(raw_scales[inverse == i]) for i in range(len(unique_anchors))], dtype=np.float32)
-        global_median = float(np.median(cell_medians))
+        # --- Step 6: cell-wise median (vectorised via sorting) ---
+        anchor_flat = anchor_row * grid_w + anchor_col
+        sort_idx = np.argsort(anchor_flat)
+        sorted_anchors = anchor_flat[sort_idx]
+        sorted_scales = raw_scales[sort_idx]
+        boundaries = np.flatnonzero(np.diff(sorted_anchors)) + 1
+        groups = np.split(sorted_scales, boundaries)
+        unique_anchors = sorted_anchors[np.concatenate([[0], boundaries])]
+        cell_median_vals = np.array([np.median(g) for g in groups], dtype=np.float32)
+
+        global_median = float(np.median(cell_median_vals))
+        print(f"  [Voronoi] Cells: {len(unique_anchors)}, global median scale: {global_median:.4f}")
         if global_median <= 0:
             return gaussians
 
-        # --- Step 6: build per-Gaussian scale array ---
+        anchor_to_median = dict(zip(unique_anchors, cell_median_vals))
+
+        # --- Step 7: build per-Gaussian scale array ---
         per_gauss_scale = np.full(len(pixel_x), global_median, dtype=np.float32)
-        gauss_dists = dist_map[valid_py, valid_px]
-        within = gauss_dists <= max_dist
-        per_gauss_scale[valid_idx[within]] = cell_medians[inverse[within]]
+        gauss_dists = dist_map[valid_py_g, valid_px_g]
+        within = gauss_dists <= max_dist_grid
+        within_idx = valid_idx[within]
+        within_anchors = anchor_flat[within]
+        per_gauss_scale[within_idx] = np.array(
+            [anchor_to_median[a] for a in within_anchors], dtype=np.float32
+        )
 
         # --- Step 7: apply ---
         device = gaussians.mean_vectors.device
@@ -353,6 +380,11 @@ class SplatProcessor:
             else:
                 splat = rotate_to_pose(splat, yaw=view.yaw, pitch=view.pitch)
 
-            processed_splats.append(splat)
+            processed_splats.append((view.pano_id, splat))
 
-        return merge(processed_splats)
+        per_pano_splats = {}
+        for pano_id, splat in processed_splats:
+            per_pano_splats.setdefault(pano_id, []).append(splat)
+        per_pano_merged = {pid: merge(splats) for pid, splats in per_pano_splats.items()}
+
+        return merge([s for _, s in processed_splats]), per_pano_merged
