@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 import math
-from scipy.spatial import cKDTree
+from scipy.ndimage import distance_transform_edt
 from scipy.spatial.transform import Rotation
 from sharp.utils.gaussians import Gaussians3D, apply_transform
 from datatype import View
@@ -184,9 +184,9 @@ class SplatProcessor:
     ) -> Gaussians3D:
         """
         Per-Gaussian DA3 alignment via Voronoi cells.
-        Each Gaussian is assigned to its nearest DA3 anchor pixel (KD-tree).
-        Within each cell, all Gaussians share the cell's median scale so relative
-        structure is preserved. Gaussians too far from any anchor get global median.
+        Pre-computes a label map (distance transform) so each pixel instantly knows
+        its nearest DA3 anchor. Within each cell all Gaussians share the median scale
+        so relative structure is preserved. Gaussians beyond diagonal/4 get global median.
         """
         # --- Step 1: extract DA3 anchor pixels from the sparse depth map ---
         da3_v, da3_u = np.where(reference_depth > 0)
@@ -201,39 +201,40 @@ class SplatProcessor:
         if int(valid.sum()) < 16:
             return gaussians
 
-        # --- Step 3: KD-tree Voronoi assignment ---
-        tree = cKDTree(np.stack([da3_u, da3_v], axis=1).astype(np.float32))
-        max_dist = math.sqrt(image_width ** 2 + image_height ** 2) / 4.0
+        # --- Step 3: pre-compute Voronoi label map via distance transform ---
+        # For every pixel, find the nearest DA3 anchor in O(H*W) then look up in O(1)
+        H, W = int(image_height), int(image_width)
+        max_dist = math.sqrt(W ** 2 + H ** 2) / 4.0
 
+        anchor_mask = np.ones((H, W), dtype=bool)
+        anchor_mask[da3_v, da3_u] = False  # anchor pixels are "features"
+        dist_map, nearest = distance_transform_edt(anchor_mask, return_indices=True)
+        # nearest[0] = row, nearest[1] = col of nearest anchor for every pixel
+
+        # --- Step 4: look up anchor ref-depth and compute per-Gaussian raw scale ---
         valid_idx = np.where(valid)[0]
-        valid_px = pixel_x[valid_idx]
-        valid_py = pixel_y[valid_idx]
+        valid_px = np.clip(np.round(pixel_x[valid_idx]).astype(np.int32), 0, W - 1)
+        valid_py = np.clip(np.round(pixel_y[valid_idx]).astype(np.int32), 0, H - 1)
         valid_dz = np.clip(depth_z[valid_idx], 1e-6, None)
 
-        dists, anchor_idxs = tree.query(
-            np.stack([valid_px, valid_py], axis=1).astype(np.float32)
-        )
+        anchor_row = nearest[0, valid_py, valid_px]
+        anchor_col = nearest[1, valid_py, valid_px]
+        ref_z = reference_depth[anchor_row, anchor_col].astype(np.float32)
+        raw_scales = ref_z / valid_dz
 
-        # --- Step 4: per-Gaussian raw scale ---
-        ref_z = da3_z[anchor_idxs]
-        raw_scales = ref_z / valid_dz  # shape (num_valid,)
-
-        # --- Step 5: cell-wise median ---
-        unique_anchors = np.unique(anchor_idxs)
-        cell_median = {}
-        for anchor in unique_anchors:
-            mask = anchor_idxs == anchor
-            cell_median[anchor] = float(np.median(raw_scales[mask]))
-
-        global_median = float(np.median(list(cell_median.values())))
+        # --- Step 5: cell-wise median (group by anchor pixel) ---
+        anchor_flat = anchor_row * W + anchor_col  # unique id per anchor
+        unique_anchors, inverse = np.unique(anchor_flat, return_inverse=True)
+        cell_medians = np.array([np.median(raw_scales[inverse == i]) for i in range(len(unique_anchors))], dtype=np.float32)
+        global_median = float(np.median(cell_medians))
         if global_median <= 0:
             return gaussians
 
         # --- Step 6: build per-Gaussian scale array ---
         per_gauss_scale = np.full(len(pixel_x), global_median, dtype=np.float32)
-        for j, (anchor, dist) in enumerate(zip(anchor_idxs, dists)):
-            if dist <= max_dist:
-                per_gauss_scale[valid_idx[j]] = cell_median[anchor]
+        gauss_dists = dist_map[valid_py, valid_px]
+        within = gauss_dists <= max_dist
+        per_gauss_scale[valid_idx[within]] = cell_medians[inverse[within]]
 
         # --- Step 7: apply ---
         device = gaussians.mean_vectors.device
