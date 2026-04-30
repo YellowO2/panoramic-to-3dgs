@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import math
+from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
 from sharp.utils.gaussians import Gaussians3D, apply_transform
 from datatype import View
@@ -172,6 +173,79 @@ class SplatProcessor:
             opacities=gaussians.opacities,
         )
 
+    def align_gaussians_voronoi(
+        self,
+        gaussians: Gaussians3D,
+        reference_depth: np.ndarray,
+        focal_x_px: float,
+        focal_y_px: float,
+        image_width: int,
+        image_height: int,
+    ) -> Gaussians3D:
+        """
+        Per-Gaussian DA3 alignment via Voronoi cells.
+        Each Gaussian is assigned to its nearest DA3 anchor pixel (KD-tree).
+        Within each cell, all Gaussians share the cell's median scale so relative
+        structure is preserved. Gaussians too far from any anchor get global median.
+        """
+        # --- Step 1: extract DA3 anchor pixels from the sparse depth map ---
+        da3_v, da3_u = np.where(reference_depth > 0)
+        da3_z = reference_depth[da3_v, da3_u].astype(np.float32)
+        if len(da3_u) < 4:
+            return gaussians
+
+        # --- Step 2: project Gaussians to 2D (use Z-depth to match reference_depth) ---
+        pixel_x, pixel_y, depth_z, _, valid = project_gaussians_to_2d(
+            gaussians, focal_x_px, focal_y_px, image_width, image_height
+        )
+        if int(valid.sum()) < 16:
+            return gaussians
+
+        # --- Step 3: KD-tree Voronoi assignment ---
+        tree = cKDTree(np.stack([da3_u, da3_v], axis=1).astype(np.float32))
+        max_dist = math.sqrt(image_width ** 2 + image_height ** 2) / 4.0
+
+        valid_idx = np.where(valid)[0]
+        valid_px = pixel_x[valid_idx]
+        valid_py = pixel_y[valid_idx]
+        valid_dz = np.clip(depth_z[valid_idx], 1e-6, None)
+
+        dists, anchor_idxs = tree.query(
+            np.stack([valid_px, valid_py], axis=1).astype(np.float32)
+        )
+
+        # --- Step 4: per-Gaussian raw scale ---
+        ref_z = da3_z[anchor_idxs]
+        raw_scales = ref_z / valid_dz  # shape (num_valid,)
+
+        # --- Step 5: cell-wise median ---
+        unique_anchors = np.unique(anchor_idxs)
+        cell_median = {}
+        for anchor in unique_anchors:
+            mask = anchor_idxs == anchor
+            cell_median[anchor] = float(np.median(raw_scales[mask]))
+
+        global_median = float(np.median(list(cell_median.values())))
+        if global_median <= 0:
+            return gaussians
+
+        # --- Step 6: build per-Gaussian scale array ---
+        per_gauss_scale = np.full(len(pixel_x), global_median, dtype=np.float32)
+        for j, (anchor, dist) in enumerate(zip(anchor_idxs, dists)):
+            if dist <= max_dist:
+                per_gauss_scale[valid_idx[j]] = cell_median[anchor]
+
+        # --- Step 7: apply ---
+        device = gaussians.mean_vectors.device
+        scale_tensor = torch.tensor(per_gauss_scale, dtype=torch.float32, device=device).unsqueeze(1)
+        return Gaussians3D(
+            mean_vectors=gaussians.mean_vectors * scale_tensor,
+            singular_values=gaussians.singular_values * scale_tensor,
+            quaternions=gaussians.quaternions,
+            colors=gaussians.colors,
+            opacities=gaussians.opacities,
+        )
+
     def align_splats_by_near_edge(
         self, views: list[View], splats_list: list[Gaussians3D]
     ) -> list[Gaussians3D]:
@@ -249,7 +323,7 @@ class SplatProcessor:
                 elif view.depth is not None:
                     ref_depth = view.depth
                 if ref_depth is not None:
-                    trimmed[i] = self.align_gaussians_per_point(
+                    trimmed[i] = self.align_gaussians_voronoi(
                         splat,
                         ref_depth,
                         view.focal_px,
