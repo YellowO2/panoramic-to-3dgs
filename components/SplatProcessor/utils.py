@@ -156,6 +156,16 @@ def compute_per_point_scales(pixel_x, pixel_y, radial, depth_z, reference_depth,
     trimmed = raw_scale_ok[(raw_scale_ok >= lo) & (raw_scale_ok <= hi)]
     return raw_scale_ok, float(np.median(trimmed)) if trimmed.size > 0 else float(np.median(raw_scale_ok)), ok
 
+def scale_gaussians(gaussians: Gaussians3D, scale: float) -> Gaussians3D:
+    s = torch.tensor(scale, dtype=torch.float32, device=gaussians.mean_vectors.device)
+    return Gaussians3D(
+        mean_vectors=gaussians.mean_vectors * s,
+        singular_values=gaussians.singular_values * s,
+        quaternions=gaussians.quaternions,
+        colors=gaussians.colors,
+        opacities=gaussians.opacities,
+    )
+
 def rotate_to_pose(gaussians: Gaussians3D, yaw: float, pitch: float) -> Gaussians3D:
     rotation = Rotation.from_euler('yx', [yaw, pitch], degrees=True)
     transform = torch.cat([torch.tensor(rotation.as_matrix(), dtype=torch.float32).to(gaussians.mean_vectors.device), torch.zeros((3, 1)).to(gaussians.mean_vectors.device)], dim=1)

@@ -10,6 +10,7 @@ from components.SplatProcessor.utils import (
     compute_per_point_scales,
     project_world_cloud_to_view,
     rotate_to_pose,
+    scale_gaussians,
     trim_by_fov,
     trim_by_max_depth,
     merge
@@ -139,6 +140,31 @@ class SplatProcessor:
             raw_scale_ok, valid, ok, median_scale
         )
 
+    def align_gaussians_global_scale(
+        self,
+        gaussians: Gaussians3D,
+        reference_depth: np.ndarray,
+        focal_x_px: float,
+        focal_y_px: float,
+        image_width: int,
+        image_height: int,
+    ) -> Gaussians3D:
+        """Scale all Gaussians by a single global median scale derived from the reference depth."""
+        pixel_x, pixel_y, depth_z, radial, valid = project_gaussians_to_2d(
+            gaussians, focal_x_px, focal_y_px, image_width, image_height
+        )
+        if int(valid.sum()) < 64:
+            return gaussians
+
+        # use_radial=False because reference_depth stores Z (camera-plane depth)
+        raw_scale_ok, median_scale, ok = compute_per_point_scales(
+            pixel_x, pixel_y, radial, depth_z, reference_depth, valid, use_radial=False
+        )
+        if raw_scale_ok is None or median_scale <= 0:
+            return gaussians
+
+        return scale_gaussians(gaussians, median_scale)
+
     def process(self, views: list[View], splats_list: list[Gaussians3D], pano_poses: dict = None, da3_world_pts: np.ndarray = None) -> Gaussians3D:
         """Main processing loop: align, trim, pose, and merge."""
         processed_splats = []
@@ -159,7 +185,7 @@ class SplatProcessor:
                 ref_depth = view.depth
 
             if ref_depth is not None:
-                splat = self.align_gaussians_to_depth(
+                splat = self.align_gaussians_global_scale(
                     splat, ref_depth, view.focal_px, view.focal_px, int(view.width), int(view.height)
                 )
 
