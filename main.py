@@ -73,6 +73,9 @@ def run_panoramic_pipeline(
         if da3_pts is not None:
             saver.save_point_cloud(da3_pts, os.path.join(output_dir, "da3_debug_consistency.ply"), colors=da3_cols)
 
+        del da3, da3_result, filtered_da3_views, da3_cols
+        torch.cuda.empty_cache()
+
     # 5. Generate Splats (SHARP)
     print("--- Step: Splat Generation (SHARP) ---")
     gs_generator = SplatGenerator(model_paths['sharp'])
