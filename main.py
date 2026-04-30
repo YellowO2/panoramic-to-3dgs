@@ -81,7 +81,7 @@ def run_panoramic_pipeline(
     # 5. Generate Splats (SHARP)
     print("--- Step: Splat Generation (SHARP) ---")
     gs_generator = SplatGenerator(model_paths['sharp'])
-    all_sharp_views = all_sharp_views[4:-4] #use less slice now as not enough ram
+    all_sharp_views = all_sharp_views[4:-8] #use less slice now as not enough ram
     print(f"length of all_sharp_views: {len(all_sharp_views)}")
     gaussian_list = gs_generator.generate_from_views(all_sharp_views, output_dir=os.path.join(output_dir, "gs"))
 
@@ -106,6 +106,7 @@ if __name__ == '__main__':
     panos = [
         'data/inputs/round1.jpg', 
              'data/inputs/round2.jpg', 
-             'data/inputs/round3.jpg'
+             'data/inputs/round3_2.jpg',
+                'data/inputs/round_4.jpg',
              ]
     run_panoramic_pipeline(panorama_paths=panos, output_dir='data/outputs/multi_pano_test', depth_mode='da3', model_paths=models)
