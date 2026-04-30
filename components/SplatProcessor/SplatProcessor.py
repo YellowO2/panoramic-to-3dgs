@@ -182,16 +182,16 @@ class SplatProcessor:
             splat = trim_by_max_depth(splat, self.MAX_DEPTH)
 
             # 1. Depth alignment
-            # ref_depth = None
-            # if da3_world_pts is not None and center is not None:
-            #     ref_depth = project_world_cloud_to_view(da3_world_pts, center, R_c2w, view)
-            # elif view.depth is not None:
-            #     ref_depth = view.depth
+            ref_depth = None
+            if da3_world_pts is not None and center is not None:
+                ref_depth = project_world_cloud_to_view(da3_world_pts, center, R_c2w, view)
+            elif view.depth is not None:
+                ref_depth = view.depth
 
-            # if ref_depth is not None:
-            #     splat = self.align_gaussians_global_scale(
-            #         splat, ref_depth, view.focal_px, view.focal_px, int(view.width), int(view.height)
-            #     )
+            if ref_depth is not None:
+                splat = self.align_gaussians_global_scale(
+                    splat, ref_depth, view.focal_px, view.focal_px, int(view.width), int(view.height)
+                )
 
 
             # 3. Apply global pose (C2W)
