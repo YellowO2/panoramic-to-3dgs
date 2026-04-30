@@ -177,21 +177,22 @@ class SplatProcessor:
             # Full C2W rotation: pano_rot.T rotates from panorama-local into DA3 world
             R_c2w = pano_rot.T @ R_local if pano_rot is not None else R_local
 
-            # 1. Depth alignment
-            ref_depth = None
-            if da3_world_pts is not None and center is not None:
-                ref_depth = project_world_cloud_to_view(da3_world_pts, center, R_c2w, view)
-            elif view.depth is not None:
-                ref_depth = view.depth
-
-            if ref_depth is not None:
-                splat = self.align_gaussians_global_scale(
-                    splat, ref_depth, view.focal_px, view.focal_px, int(view.width), int(view.height)
-                )
-
             # 2. Trim edges and far points (must happen before pose, while still in camera space)
             splat = trim_by_fov(splat, hfov_limit=view.hfov - 6.0)
             splat = trim_by_max_depth(splat, self.MAX_DEPTH)
+
+            # 1. Depth alignment
+            # ref_depth = None
+            # if da3_world_pts is not None and center is not None:
+            #     ref_depth = project_world_cloud_to_view(da3_world_pts, center, R_c2w, view)
+            # elif view.depth is not None:
+            #     ref_depth = view.depth
+
+            # if ref_depth is not None:
+            #     splat = self.align_gaussians_global_scale(
+            #         splat, ref_depth, view.focal_px, view.focal_px, int(view.width), int(view.height)
+            #     )
+
 
             # 3. Apply global pose (C2W)
             if center is not None:
