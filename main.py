@@ -86,7 +86,7 @@ def run_panoramic_pipeline(
     # 6. Process and Merge
     print("--- Step: Splat Processing (Alignment/Merge) ---")
     processor = SplatProcessor()
-    merged_splat = processor.process(all_sharp_views, gaussian_list, pano_poses=pano_poses, da3_world_pts=da3_pts, scale_mode="near_edge") # scale_mode can be "median" or "mean"
+    merged_splat = processor.process(all_sharp_views, gaussian_list, pano_poses=pano_poses, da3_world_pts=da3_pts, scale_mode="da3")
 
     # 7. Save Final Result
     final_path = os.path.join(output_dir, "final_output.ply")
