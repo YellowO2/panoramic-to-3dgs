@@ -59,7 +59,7 @@ def run_panoramic_pipeline(
 
     # 4. Global Multi-View Depth/Pose Generation (DA3)
     pano_poses = None
-    da3_pts = None
+    da3_pts_per_pano = None
     if depth_mode == 'da3':
         print("--- Step: DA3 Global Pose Processing ---")
         da3 = DA3Model(model_paths['da3'])
@@ -69,11 +69,11 @@ def run_panoramic_pipeline(
 
         # Save DA3 Debug PCD (Verifies the cleaned scene)
         print("--- Step: Saving DA3 Debug Consistency PCD ---")
-        da3_pts, da3_cols = backproject_views_to_pcd(filtered_da3_views, da3_result)
+        da3_pts, da3_cols, da3_pts_per_pano = backproject_views_to_pcd(filtered_da3_views, da3_result)
         if da3_pts is not None:
             saver.save_point_cloud(da3_pts, os.path.join(output_dir, "da3_debug_consistency.ply"), colors=da3_cols)
 
-        del da3, da3_result, filtered_da3_views, da3_cols
+        del da3, da3_result, filtered_da3_views, da3_cols, da3_pts
         torch.cuda.empty_cache()
 
     # 5. Generate Splats (SHARP)
@@ -86,7 +86,7 @@ def run_panoramic_pipeline(
     # 6. Process and Merge
     print("--- Step: Splat Processing (Alignment/Merge) ---")
     processor = SplatProcessor()
-    merged_splat = processor.process(all_sharp_views, gaussian_list, pano_poses=pano_poses, da3_world_pts=da3_pts, scale_mode="da3")
+    merged_splat = processor.process(all_sharp_views, gaussian_list, pano_poses=pano_poses, da3_world_pts=da3_pts_per_pano, scale_mode="da3")
 
     # 7. Save Final Result
     final_path = os.path.join(output_dir, "final_output.ply")

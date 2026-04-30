@@ -241,9 +241,10 @@ class SplatProcessor:
             for i, (view, splat) in enumerate(zip(views, trimmed)):
                 _, center, _, R_c2w = view_poses[i]
                 ref_depth = None
-                if da3_world_pts is not None and center is not None:
+                pano_pts = da3_world_pts.get(view.pano_id) if isinstance(da3_world_pts, dict) else da3_world_pts
+                if pano_pts is not None and center is not None:
                     ref_depth = project_world_cloud_to_view(
-                        da3_world_pts, center, R_c2w, view
+                        pano_pts, center, R_c2w, view
                     )
                 elif view.depth is not None:
                     ref_depth = view.depth
