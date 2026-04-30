@@ -23,9 +23,17 @@ from components.SplatProcessor.utils import (
 class SplatProcessor:
     MAX_DEPTH = 15.0  # metres; increase to keep more background, decrease to cut sky/far objects
 
-    def __init__(self, grid_resolution=8, detail_weight=0.0):
+    def __init__(
+        self,
+        grid_resolution=8,
+        detail_weight=0.0,
+        num_z_slabs=500,
+        voronoi_mode="z_slab",
+    ):
         self.grid_resolution = grid_resolution
         self.detail_weight = detail_weight
+        self.num_z_slabs = num_z_slabs
+        self.voronoi_mode = voronoi_mode  # 'per_point' or 'z_slab'
 
     def _build_scale_grid(
         self,
@@ -164,7 +172,9 @@ class SplatProcessor:
         per_point_scale[valid_indices[ok_indices]] = raw_scale_ok
 
         device = gaussians.mean_vectors.device
-        scale_tensor = torch.tensor(per_point_scale, dtype=torch.float32, device=device).unsqueeze(1)
+        scale_tensor = torch.tensor(
+            per_point_scale, dtype=torch.float32, device=device
+        ).unsqueeze(1)
         return Gaussians3D(
             mean_vectors=gaussians.mean_vectors * scale_tensor,
             singular_values=gaussians.singular_values * scale_tensor,
@@ -181,19 +191,20 @@ class SplatProcessor:
         focal_y_px: float,
         image_width: int,
         image_height: int,
+        mode: str = "z_slab",
     ) -> Gaussians3D:
         """
-        Per-Gaussian DA3 alignment via Voronoi cells.
-        Pre-computes a label map (distance transform) so each pixel instantly knows
-        its nearest DA3 anchor. Within each cell all Gaussians share the median scale
-        so relative structure is preserved. Gaussians beyond diagonal/4 get global median.
+        DA3 alignment via Voronoi cells on a downsampled grid.
+        mode='per_point': each Gaussian gets its own Voronoi-cell median scale.
+        mode='z_slab':    Gaussians are grouped into thin Z-depth bands; the whole
+                          band moves together (preserves shape of poles, signs, etc.).
         """
-        # --- Step 1: extract DA3 anchor pixels from the sparse depth map ---
+        # --- Step 1: extract DA3 anchor pixels ---
         da3_v_full, da3_u_full = np.where(reference_depth > 0)
         n_anchors = len(da3_u_full)
-        print(f"  [Voronoi] DA3 anchors in view: {n_anchors}")
+        print(f"  [Voronoi/{mode}] DA3 anchors: {n_anchors}")
         if n_anchors < 4:
-            print(f"  [Voronoi] Too few anchors, skipping alignment.")
+            print(f"  [Voronoi/{mode}] Too few anchors, skipping.")
             return gaussians
 
         # --- Step 2: project Gaussians to 2D ---
@@ -201,31 +212,32 @@ class SplatProcessor:
             gaussians, focal_x_px, focal_y_px, image_width, image_height
         )
         n_valid = int(valid.sum())
-        print(f"  [Voronoi] Valid Gaussians: {n_valid} / {len(pixel_x)}")
+        print(f"  [Voronoi/{mode}] Valid Gaussians: {n_valid} / {len(pixel_x)}")
         if n_valid < 16:
             return gaussians
 
-        # --- Step 3: choose grid resolution from anchor density and aspect ratio ---
+        # --- Step 3: build downsampled grid scaled to anchor density ---
         aspect = image_width / image_height
         grid_w = int(min(math.sqrt(n_anchors * aspect), image_width))
         grid_h = int(min(math.sqrt(n_anchors / aspect), image_height))
         grid_w, grid_h = max(grid_w, 4), max(grid_h, 4)
-        print(f"  [Voronoi] Grid: {grid_w}x{grid_h} (view: {image_width}x{image_height})")
+        print(
+            f"  [Voronoi/{mode}] Grid: {grid_w}x{grid_h} (view: {image_width}x{image_height})"
+        )
 
-        # scale anchor coords to grid space
         sx, sy = grid_w / image_width, grid_h / image_height
         da3_u_g = np.clip((da3_u_full * sx).astype(np.int32), 0, grid_w - 1)
         da3_v_g = np.clip((da3_v_full * sy).astype(np.int32), 0, grid_h - 1)
-        # rebuild reference depth on the grid (min-z wins per cell)
         grid_depth = np.zeros((grid_h, grid_w), dtype=np.float32)
-        np.maximum.at(grid_depth, (da3_v_g, da3_u_g), reference_depth[da3_v_full, da3_u_full])
+        np.maximum.at(
+            grid_depth, (da3_v_g, da3_u_g), reference_depth[da3_v_full, da3_u_full]
+        )
 
-        # --- Step 4: pre-compute Voronoi label map via distance transform on the small grid ---
-        anchor_mask = grid_depth == 0
-        dist_map, nearest = distance_transform_edt(anchor_mask, return_indices=True)
-        max_dist_grid = math.sqrt(grid_w ** 2 + grid_h ** 2) / 4.0
+        # --- Step 4: Voronoi label map (distance transform on small grid) ---
+        dist_map, nearest = distance_transform_edt(grid_depth == 0, return_indices=True)
+        max_dist_grid = math.sqrt(grid_w**2 + grid_h**2) / 4.0
 
-        # --- Step 5: look up anchor ref-depth for each valid Gaussian ---
+        # --- Step 5: map each valid Gaussian to its grid pixel ---
         valid_idx = np.where(valid)[0]
         valid_px_g = np.clip((pixel_x[valid_idx] * sx).astype(np.int32), 0, grid_w - 1)
         valid_py_g = np.clip((pixel_y[valid_idx] * sy).astype(np.int32), 0, grid_h - 1)
@@ -235,37 +247,71 @@ class SplatProcessor:
         anchor_col = nearest[1, valid_py_g, valid_px_g]
         ref_z = grid_depth[anchor_row, anchor_col].astype(np.float32)
         raw_scales = ref_z / valid_dz
+        gauss_dists = dist_map[valid_py_g, valid_px_g]
+        within = gauss_dists <= max_dist_grid  # mask: has a nearby anchor
 
-        # --- Step 6: cell-wise median (vectorised via sorting) ---
-        anchor_flat = anchor_row * grid_w + anchor_col
-        sort_idx = np.argsort(anchor_flat)
-        sorted_anchors = anchor_flat[sort_idx]
-        sorted_scales = raw_scales[sort_idx]
-        boundaries = np.flatnonzero(np.diff(sorted_anchors)) + 1
-        groups = np.split(sorted_scales, boundaries)
-        unique_anchors = sorted_anchors[np.concatenate([[0], boundaries])]
-        cell_median_vals = np.array([np.median(g) for g in groups], dtype=np.float32)
-
-        global_median = float(np.median(cell_median_vals))
-        print(f"  [Voronoi] Cells: {len(unique_anchors)}, global median scale: {global_median:.4f}")
+        # --- Step 6: compute global median for fallback ---
+        global_median = float(np.median(raw_scales[within])) if within.any() else 1.0
+        print(f"  [Voronoi/{mode}] Global median scale: {global_median:.4f}")
         if global_median <= 0:
             return gaussians
 
-        anchor_to_median = dict(zip(unique_anchors, cell_median_vals))
-
-        # --- Step 7: build per-Gaussian scale array ---
         per_gauss_scale = np.full(len(pixel_x), global_median, dtype=np.float32)
-        gauss_dists = dist_map[valid_py_g, valid_px_g]
-        within = gauss_dists <= max_dist_grid
-        within_idx = valid_idx[within]
-        within_anchors = anchor_flat[within]
-        per_gauss_scale[within_idx] = np.array(
-            [anchor_to_median[a] for a in within_anchors], dtype=np.float32
-        )
+
+        if mode == "per_point":
+            # --- per-point: each Voronoi cell gets its own median ---
+            anchor_flat = anchor_row * grid_w + anchor_col
+            within_idx = valid_idx[within]
+            sort_order = np.argsort(anchor_flat[within])
+            sorted_anchors = anchor_flat[within][sort_order]
+            sorted_scales = raw_scales[within][sort_order]
+            boundaries = np.flatnonzero(np.diff(sorted_anchors)) + 1
+            groups = np.split(sorted_scales, boundaries)
+            unique_anchors = sorted_anchors[np.concatenate([[0], boundaries])]
+            cell_medians = np.array([np.median(g) for g in groups], dtype=np.float32)
+            print(f"  [Voronoi/{mode}] Voronoi cells used: {len(unique_anchors)}")
+            anchor_to_median = dict(zip(unique_anchors.tolist(), cell_medians.tolist()))
+            per_gauss_scale[within_idx] = np.array(
+                [anchor_to_median[a] for a in anchor_flat[within].tolist()],
+                dtype=np.float32,
+            )
+
+        else:  # z_slab
+            # --- z-slab: thin depth bands move as rigid units ---
+            slab_thickness = self.MAX_DEPTH / self.num_z_slabs
+            slab_idx = np.clip(
+                (valid_dz / slab_thickness).astype(np.int32), 0, self.num_z_slabs - 1
+            )
+
+            # only use Gaussians within anchor distance for slab scale computation
+            within_slab_idx = slab_idx[within]
+            sort_order = np.argsort(within_slab_idx)
+            sorted_slab = within_slab_idx[sort_order]
+            sorted_scales_w = raw_scales[within][sort_order]
+            sorted_valid_pos = valid_idx[within][sort_order]
+
+            boundaries = np.flatnonzero(np.diff(sorted_slab)) + 1
+            slab_groups = np.split(np.arange(len(sorted_slab)), boundaries)
+            unique_slabs = sorted_slab[np.concatenate([[0], boundaries])]
+            slab_medians = np.array(
+                [np.median(sorted_scales_w[g]) for g in slab_groups], dtype=np.float32
+            )
+            print(
+                f"  [Voronoi/{mode}] Occupied slabs: {len(unique_slabs)} / {self.num_z_slabs} "
+                f"(thickness: {slab_thickness:.3f}m)"
+            )
+
+            slab_to_median = dict(zip(unique_slabs.tolist(), slab_medians.tolist()))
+            # apply slab scale to ALL Gaussians in that slab (not just within-distance ones)
+            for s, scale in slab_to_median.items():
+                in_slab = valid_idx[slab_idx == s]
+                per_gauss_scale[in_slab] = scale
 
         # --- Step 7: apply ---
         device = gaussians.mean_vectors.device
-        scale_tensor = torch.tensor(per_gauss_scale, dtype=torch.float32, device=device).unsqueeze(1)
+        scale_tensor = torch.tensor(
+            per_gauss_scale, dtype=torch.float32, device=device
+        ).unsqueeze(1)
         return Gaussians3D(
             mean_vectors=gaussians.mean_vectors * scale_tensor,
             singular_values=gaussians.singular_values * scale_tensor,
@@ -343,7 +389,11 @@ class SplatProcessor:
             for i, (view, splat) in enumerate(zip(views, trimmed)):
                 _, center, _, R_c2w = view_poses[i]
                 ref_depth = None
-                pano_pts = da3_world_pts.get(view.pano_id) if isinstance(da3_world_pts, dict) else da3_world_pts
+                pano_pts = (
+                    da3_world_pts.get(view.pano_id)
+                    if isinstance(da3_world_pts, dict)
+                    else da3_world_pts
+                )
                 if pano_pts is not None and center is not None:
                     ref_depth = project_world_cloud_to_view(
                         pano_pts, center, R_c2w, view
@@ -358,6 +408,7 @@ class SplatProcessor:
                         view.focal_px,
                         int(view.width),
                         int(view.height),
+                        mode=self.voronoi_mode,
                     )
 
         # Step 3: trim FOV edges, then apply pose
@@ -385,6 +436,8 @@ class SplatProcessor:
         per_pano_splats = {}
         for pano_id, splat in processed_splats:
             per_pano_splats.setdefault(pano_id, []).append(splat)
-        per_pano_merged = {pid: merge(splats) for pid, splats in per_pano_splats.items()}
+        per_pano_merged = {
+            pid: merge(splats) for pid, splats in per_pano_splats.items()
+        }
 
         return merge([s for _, s in processed_splats]), per_pano_merged
