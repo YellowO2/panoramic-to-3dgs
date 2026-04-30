@@ -50,7 +50,7 @@ def run_panoramic_pipeline(
         # A. Extract SHARP views (for splats)
         sharp_dir = os.path.join(output_dir, f"views_pano_{i}_sharp")
         os.makedirs(sharp_dir, exist_ok=True)
-        all_sharp_views.extend(extract_views(current_image, sharp_dir, overlap_degrees=9, slice_count=4, prefix=f"pano_{i}_", panorama_depth=pano_depth, pano_id=i)) 
+        all_sharp_views.extend(extract_views(current_image, sharp_dir, overlap_degrees=10, slice_count=5, prefix=f"pano_{i}_", panorama_depth=pano_depth, pano_id=i)) 
 
         # B. Extract DA3 views (for global poses)
         da3_dir = os.path.join(output_dir, f"views_pano_{i}_da3")
@@ -79,7 +79,7 @@ def run_panoramic_pipeline(
     # 5. Generate Splats (SHARP)
     print("--- Step: Splat Generation (SHARP) ---")
     gs_generator = SplatGenerator(model_paths['sharp'])
-    all_sharp_views = all_sharp_views[:-4] #use less slice now as not enough ram
+    all_sharp_views = all_sharp_views[4:-4] #use less slice now as not enough ram
     gaussian_list = gs_generator.generate_from_views(all_sharp_views, output_dir=os.path.join(output_dir, "gs"))
 
     # 6. Process and Merge
@@ -94,5 +94,9 @@ def run_panoramic_pipeline(
 
 if __name__ == '__main__':
     models = {'da360': "models/DA360_large.pth", 'da3': "models/models--depth-anything--DA3NESTED-GIANT-LARGE-1.1/snapshots/b2359bdf726fb44ef62acca04d629dcf158053e7", 'sharp': "models/sharp_2572gikvuh.pt"}
-    panos = ['data/inputs/round1.jpg', 'data/inputs/round2.jpg', 'data/inputs/round3.jpg']
+    panos = [
+        'data/inputs/round1.jpg', 
+             'data/inputs/round2.jpg', 
+             'data/inputs/round3.jpg'
+             ]
     run_panoramic_pipeline(panorama_paths=panos, output_dir='data/outputs/multi_pano_test', depth_mode='da3', model_paths=models)
