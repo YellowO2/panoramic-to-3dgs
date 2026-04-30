@@ -156,7 +156,7 @@ def compute_per_point_scales(pixel_x, pixel_y, radial, depth_z, reference_depth,
     trimmed = raw_scale_ok[(raw_scale_ok >= lo) & (raw_scale_ok <= hi)]
     return raw_scale_ok, float(np.mean(trimmed)) if trimmed.size > 0 else float(np.mean(raw_scale_ok)), ok
 
-def measure_near_edge_width(gaussians: Gaussians3D, near_percentile: float = 15.0) -> float:
+def measure_near_edge_width(gaussians: Gaussians3D, near_percentile: float = 5.0) -> float:
     """
     Measures the horizontal width of the nearest geometry in a slice (top-down view).
     Filters to the closest Gaussians by Z, then measures their X spread.

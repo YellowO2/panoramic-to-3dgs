@@ -39,13 +39,13 @@ def run_panoramic_pipeline(
 
         # individual DA360 for alignment/debug if requested
         pano_depth = None
-        if depth_mode == 'da360':
-            da360 = DA360DepthModel(model_paths['da360'])
-            pano_depth, pano_rgb = da360.predict(current_image)
-            pcd_pts, pcd_cols = panoramic_depth_to_pcd(pano_depth, pano_rgb)
-            saver.save_point_cloud(pcd_pts, os.path.join(output_dir, f"pano_{i}_da360.ply"), colors=pcd_cols)
-        elif depth_mode == 'external' and external_depth_paths:
-            pano_depth = cv2.imread(external_depth_paths[i], cv2.IMREAD_UNCHANGED)
+        # if depth_mode == 'da360':
+        #     da360 = DA360DepthModel(model_paths['da360'])
+        #     pano_depth, pano_rgb = da360.predict(current_image)
+        #     pcd_pts, pcd_cols = panoramic_depth_to_pcd(pano_depth, pano_rgb)
+        #     saver.save_point_cloud(pcd_pts, os.path.join(output_dir, f"pano_{i}_da360.ply"), colors=pcd_cols)
+        # elif depth_mode == 'external' and external_depth_paths:
+        #     pano_depth = cv2.imread(external_depth_paths[i], cv2.IMREAD_UNCHANGED)
 
         # A. Extract SHARP views (for splats)
         sharp_dir = os.path.join(output_dir, f"views_pano_{i}_sharp")
@@ -86,7 +86,7 @@ def run_panoramic_pipeline(
     # 6. Process and Merge
     print("--- Step: Splat Processing (Alignment/Merge) ---")
     processor = SplatProcessor()
-    merged_splat = processor.process(all_sharp_views, gaussian_list, pano_poses=pano_poses, da3_world_pts=da3_pts)
+    merged_splat = processor.process(all_sharp_views, gaussian_list, pano_poses=pano_poses, da3_world_pts=da3_pts, scale_mode="near_edge") # scale_mode can be "median" or "mean"
 
     # 7. Save Final Result
     final_path = os.path.join(output_dir, "final_output.ply")
