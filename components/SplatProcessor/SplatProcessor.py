@@ -11,6 +11,7 @@ from components.SplatProcessor.utils import (
     project_world_cloud_to_view,
     rotate_to_pose,
     scale_gaussians,
+    measure_near_edge_width,
     trim_by_fov,
     trim_by_max_depth,
     merge
@@ -165,36 +166,75 @@ class SplatProcessor:
         print(f"Global scale factor: {median_scale:.3f}")
         return scale_gaussians(gaussians, median_scale)
 
-    def process(self, views: list[View], splats_list: list[Gaussians3D], pano_poses: dict = None, da3_world_pts: np.ndarray = None) -> Gaussians3D:
-        """Main processing loop: align, trim, pose, and merge."""
+    def align_splats_by_near_edge(self, views: list[View], splats_list: list[Gaussians3D]) -> list[Gaussians3D]:
+        """
+        Scale each splat so all bottom-edge widths match the median across slices.
+        Assumes trim_by_max_depth has already been applied (camera space, before pose).
+        """
+        widths = []
+        for view, splat in zip(views, splats_list):
+            w = measure_near_edge_width(splat)
+            widths.append(w)
+            print(f"  Near edge width [{view.yaw:+.0f}°]: {f'{w:.3f}' if w is not None else 'N/A'}")
+
+        valid_widths = [w for w in widths if w is not None]
+        if not valid_widths:
+            print("Bottom edge alignment: no valid measurements, skipping.")
+            return splats_list
+
+        target = float(np.median(valid_widths))
+        print(f"Near edge target width: {target:.3f}")
+
+        result = []
+        for splat, w in zip(splats_list, widths):
+            if w is not None and w > 1e-6:
+                result.append(scale_gaussians(splat, target / w))
+            else:
+                result.append(splat)
+        return result
+
+    def process(self, views: list[View], splats_list: list[Gaussians3D], pano_poses: dict = None, da3_world_pts: np.ndarray = None, scale_mode: str = 'da3') -> Gaussians3D:
+        """Main processing loop: align, trim, pose, and merge.
+        scale_mode: 'da3' uses DA3 world cloud projection; 'bottom_edge' uses bottom-edge width matching.
+        """
         processed_splats = []
 
-        for view, splat in zip(views, splats_list):
+        # Pre-compute per-view poses (needed for da3 mode inside loop)
+        view_poses = []
+        for view in views:
             R_local = Rotation.from_euler('yx', [view.yaw, view.pitch], degrees=True).as_matrix()
             pano_data = pano_poses.get(view.pano_id) if pano_poses else None
             center = pano_data['center'] if pano_data else None
             pano_rot = pano_data['rotation'] if pano_data else None
-            # Full C2W rotation: pano_rot.T rotates from panorama-local into DA3 world
             R_c2w = pano_rot.T @ R_local if pano_rot is not None else R_local
+            view_poses.append((R_local, center, pano_rot, R_c2w))
 
-            # 2. Trim edges and far points (must happen before pose, while still in camera space)
+        # Step 1: trim far points first (camera space)
+        trimmed = [trim_by_max_depth(splat, self.MAX_DEPTH) for splat in splats_list]
+
+        # Step 2: scale alignment
+        if scale_mode == 'near_edge':
+            print("--- Scale mode: near edge width ---")
+            trimmed = self.align_splats_by_near_edge(views, trimmed)
+        else:
+            print("--- Scale mode: DA3 projection ---")
+            for i, (view, splat) in enumerate(zip(views, trimmed)):
+                _, center, _, R_c2w = view_poses[i]
+                ref_depth = None
+                if da3_world_pts is not None and center is not None:
+                    ref_depth = project_world_cloud_to_view(da3_world_pts, center, R_c2w, view)
+                elif view.depth is not None:
+                    ref_depth = view.depth
+                if ref_depth is not None:
+                    trimmed[i] = self.align_gaussians_global_scale(
+                        splat, ref_depth, view.focal_px, view.focal_px, int(view.width), int(view.height)
+                    )
+
+        # Step 3: trim FOV edges, then apply pose
+        for i, (view, splat) in enumerate(zip(views, trimmed)):
+            _, center, _, R_c2w = view_poses[i]
             splat = trim_by_fov(splat, hfov_limit=view.hfov - 6.0)
-            splat = trim_by_max_depth(splat, self.MAX_DEPTH)
 
-            # 1. Depth alignment
-            ref_depth = None
-            if da3_world_pts is not None and center is not None:
-                ref_depth = project_world_cloud_to_view(da3_world_pts, center, R_c2w, view)
-            elif view.depth is not None:
-                ref_depth = view.depth
-
-            if ref_depth is not None:
-                splat = self.align_gaussians_global_scale(
-                    splat, ref_depth, view.focal_px, view.focal_px, int(view.width), int(view.height)
-                )
-
-
-            # 3. Apply global pose (C2W)
             if center is not None:
                 c2w = np.eye(4)
                 c2w[:3, :3] = R_c2w

@@ -156,6 +156,28 @@ def compute_per_point_scales(pixel_x, pixel_y, radial, depth_z, reference_depth,
     trimmed = raw_scale_ok[(raw_scale_ok >= lo) & (raw_scale_ok <= hi)]
     return raw_scale_ok, float(np.mean(trimmed)) if trimmed.size > 0 else float(np.mean(raw_scale_ok)), ok
 
+def measure_near_edge_width(gaussians: Gaussians3D, near_percentile: float = 15.0) -> float:
+    """
+    Measures the horizontal width of the nearest geometry in a slice (top-down view).
+    Filters to the closest Gaussians by Z, then measures their X spread.
+    This chord width forms the side of the polygon when slices are tiled around 360°.
+    Returns the 10th-90th percentile X spread, or None if too few points.
+    """
+    mv = gaussians.mean_vectors[0].detach().cpu().numpy()
+    x, z = mv[:, 0], mv[:, 2]
+    valid = z > 0.1
+    x, z = x[valid], z[valid]
+    if len(x) < 32:
+        return None
+
+    z_thresh = np.percentile(z, near_percentile)
+    near = z <= z_thresh
+    if int(near.sum()) < 16:
+        return None
+
+    x_near = x[near]
+    return float(np.percentile(x_near, 90) - np.percentile(x_near, 10))
+
 def scale_gaussians(gaussians: Gaussians3D, scale: float) -> Gaussians3D:
     s = torch.tensor(scale, dtype=torch.float32, device=gaussians.mean_vectors.device)
     return Gaussians3D(
