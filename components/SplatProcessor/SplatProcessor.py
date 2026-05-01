@@ -109,6 +109,7 @@ class SplatProcessor:
                         view.focal_px,
                         int(view.width),
                         int(view.height),
+                        smooth_sigma=self.smooth_sigma_fov,
                     )
                 elif scale_mode in ("da3_zslab", "da3_zslab_global"):
                     trimmed[i] = align_da3_zslab(

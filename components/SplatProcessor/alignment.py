@@ -85,6 +85,9 @@ def _voronoi_common(gaussians, reference_depth, focal_x_px, focal_y_px, image_wi
         anchor_row=anchor_row,
         anchor_col=anchor_col,
         grid_w=grid_w,
+        grid_h=grid_h,
+        valid_px_g=valid_px_g,
+        valid_py_g=valid_py_g,
         raw_scales=raw_scales,
         within=within,
         global_median=global_median,
@@ -129,8 +132,9 @@ def align_da3_per_point(
     focal_y_px: float,
     image_width: int,
     image_height: int,
+    smooth_sigma: float = 0.15,
 ) -> Gaussians3D:
-    """Each Gaussian gets the median scale of its nearest DA3 Voronoi cell."""
+    """Each Gaussian gets the median scale of its nearest DA3 Voronoi cell, then 2D smoothed."""
     ctx = _voronoi_common(gaussians, reference_depth, focal_x_px, focal_y_px, image_width, image_height)
     if ctx is None:
         return gaussians
@@ -141,9 +145,10 @@ def align_da3_per_point(
     anchor_row = ctx["anchor_row"]
     anchor_col = ctx["anchor_col"]
     grid_w = ctx["grid_w"]
+    grid_h = ctx["grid_h"]
+    valid_px_g = ctx["valid_px_g"]
+    valid_py_g = ctx["valid_py_g"]
     global_median = ctx["global_median"]
-
-    per_gauss_scale = np.full(len(ctx["pixel_x"]), global_median, dtype=np.float32)
 
     anchor_flat = anchor_row * grid_w + anchor_col
     sort_order = np.argsort(anchor_flat[within])
@@ -155,10 +160,31 @@ def align_da3_per_point(
     cell_medians = np.array([np.median(g) for g in groups], dtype=np.float32)
     print(f"  [DA3 per_point] Voronoi cells: {len(unique_anchors)}")
 
-    anchor_to_median = dict(zip(unique_anchors.tolist(), cell_medians.tolist()))
-    per_gauss_scale[valid_idx[within]] = np.array(
-        [anchor_to_median[a] for a in anchor_flat[within].tolist()], dtype=np.float32
-    )
+    per_gauss_scale = np.full(len(ctx["pixel_x"]), global_median, dtype=np.float32)
+
+    if smooth_sigma > 0:
+        # Place Voronoi cell medians onto the regular grid, fill + smooth, then look up per Gaussian
+        scale_grid = np.full((grid_h, grid_w), np.nan, dtype=np.float32)
+        scale_grid[unique_anchors // grid_w, unique_anchors % grid_w] = cell_medians
+
+        empty = np.isnan(scale_grid)
+        if empty.any() and (~empty).any():
+            _, nearest = distance_transform_edt(empty, return_indices=True)
+            scale_grid[empty] = scale_grid[nearest[0][empty], nearest[1][empty]]
+        elif empty.all():
+            scale_grid[:] = global_median
+
+        sigma_px = smooth_sigma * grid_w
+        scale_grid = gaussian_filter(scale_grid, sigma=sigma_px).astype(np.float32)
+        print(f"  [DA3 per_point] Smooth sigma: {sigma_px:.1f} grid px")
+
+        per_gauss_scale[valid_idx] = scale_grid[valid_py_g, valid_px_g]
+    else:
+        anchor_to_median = dict(zip(unique_anchors.tolist(), cell_medians.tolist()))
+        per_gauss_scale[valid_idx[within]] = np.array(
+            [anchor_to_median[a] for a in anchor_flat[within].tolist()], dtype=np.float32
+        )
+
     return _apply_per_gauss_scale(gaussians, per_gauss_scale)
 
 
