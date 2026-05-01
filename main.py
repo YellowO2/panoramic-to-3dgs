@@ -121,7 +121,7 @@ def run_panoramic_pipeline(
         gaussian_list,
         pano_poses=pano_poses,
         da3_world_pts=da3_pts_per_pano,
-        scale_mode="da3_y_ground",
+        scale_mode="da3_zslab_global",
     )
 
     # 7. Save Final Result

@@ -40,6 +40,7 @@ class SplatProcessor:
             'da3_per_point' — per-Voronoi-cell DA3 scale
             'da3_zslab'     — Z-depth band DA3 scale (slicing on z axis)
             'da3_y_ground'  — Y-ground elevation alignment
+            'da3_zslab_global' — like da3_zslab but with global Z slabs computed from all views combined
         """
         # Pre-compute per-view world poses
         view_poses = []
@@ -60,19 +61,25 @@ class SplatProcessor:
         print(f"--- Scale mode: {scale_mode} ---")
         if scale_mode == "near_edge":
             trimmed = align_near_edge(views, trimmed)
-        elif scale_mode in ("da3_per_point", "da3_zslab"):
+        elif scale_mode in ("da3_per_point", "da3_zslab", "da3_zslab_global"):
+            all_da3_pts = None
+            if scale_mode == "da3_zslab_global" and isinstance(da3_world_pts, dict):
+                parts = [pts for pts in da3_world_pts.values() if pts is not None]
+                all_da3_pts = np.concatenate(parts, axis=0) if parts else None
+
             for i, (view, splat) in enumerate(zip(views, trimmed)):
                 _, center, _, R_c2w = view_poses[i]
-                pano_pts = (
-                    da3_world_pts.get(view.pano_id)
-                    if isinstance(da3_world_pts, dict)
-                    else da3_world_pts
-                )
-                ref_depth = None
-                if pano_pts is not None and center is not None:
-                    ref_depth = project_world_cloud_to_view(
-                        pano_pts, center, R_c2w, view
+                if scale_mode == "da3_zslab_global":
+                    pts = all_da3_pts
+                else:
+                    pts = (
+                        da3_world_pts.get(view.pano_id)
+                        if isinstance(da3_world_pts, dict)
+                        else da3_world_pts
                     )
+                ref_depth = None
+                if pts is not None and center is not None:
+                    ref_depth = project_world_cloud_to_view(pts, center, R_c2w, view)
                 elif view.depth is not None:
                     ref_depth = view.depth
 
