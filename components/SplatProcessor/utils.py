@@ -319,15 +319,20 @@ def correct_interpano_seams(
     per_pano_merged: dict,
     pano_centers: dict,
     boundary_band_m: float = 3.0,
-    num_angle_bins: int = 180,
-    smooth_sigma_bins: float = 5.0,
+    bin_width_m: float = 2.0,
+    smooth_sigma_bins: float = 2.0,
 ) -> dict:
-    """Shift near-boundary Gaussians toward the inter-pano depth midpoint.
+    """Shift near-boundary Gaussians to close inter-pano depth seams.
 
-    For each pano pair (A, B): finds Gaussians within boundary_band_m of the
-    Voronoi boundary, bins them by XZ angle from the midpoint between pano centers,
-    computes median radial depth per bin from each pano, then shifts both sides
-    toward their midpoint to eliminate visible seams.
+    For each pano pair (A, B):
+      - Bins near-boundary Gaussians by their XZ position ALONG the Voronoi
+        boundary line (the lateral dimension).
+      - In each bin, computes the median depth of A and B perpendicular to the
+        boundary (the direction where mismatch occurs).
+      - Shifts both sides in the boundary-normal direction toward their midpoint.
+
+    This avoids the ring artifact caused by using radial distance from the
+    midpoint, which was the bug in the previous implementation.
     """
     pids = list(per_pano_merged.keys())
     if len(pids) < 2:
@@ -339,14 +344,15 @@ def correct_interpano_seams(
     }
     shifts = {pid: np.zeros((len(positions[pid]), 3), dtype=np.float32) for pid in pids}
 
-    def _fill_circular(arr):
-        valid_idx = np.where(~np.isnan(arr))[0]
-        if len(valid_idx) == 0:
+    def _fill_and_smooth(arr, sigma):
+        valid = np.where(~np.isnan(arr))[0]
+        if len(valid) == 0:
             return arr
         result = arr.copy()
         for k in np.where(np.isnan(arr))[0]:
-            circ_dists = np.minimum(np.abs(valid_idx - k), num_angle_bins - np.abs(valid_idx - k))
-            result[k] = arr[valid_idx[np.argmin(circ_dists)]]
+            result[k] = arr[valid[np.argmin(np.abs(valid - k))]]
+        if sigma > 0:
+            result = gaussian_filter1d(result.astype(np.float64), sigma=sigma).astype(np.float32)
         return result
 
     for i in range(len(pids)):
@@ -355,12 +361,19 @@ def correct_interpano_seams(
             if pid_A not in pano_centers or pid_B not in pano_centers:
                 continue
 
-            cA = pano_centers[pid_A][[0, 2]]
-            cB = pano_centers[pid_B][[0, 2]]
-            mid_xz = (cA + cB) / 2.0
+            cA = pano_centers[pid_A][[0, 2]].astype(np.float64)
+            cB = pano_centers[pid_B][[0, 2]].astype(np.float64)
+            sep = cB - cA
+            sep_len = np.linalg.norm(sep)
+            if sep_len < 1e-3:
+                continue
 
-            xz_A = positions[pid_A][:, [0, 2]]
-            xz_B = positions[pid_B][:, [0, 2]]
+            # Unit vectors: normal = A→B direction (depth axis), tangent = along boundary
+            norm_dir = sep / sep_len        # perpendicular to Voronoi boundary
+            tang_dir = np.array([-norm_dir[1], norm_dir[0]])  # along boundary
+
+            xz_A = positions[pid_A][:, [0, 2]].astype(np.float64)
+            xz_B = positions[pid_B][:, [0, 2]].astype(np.float64)
 
             # Near-boundary: |dist_to_A - dist_to_B| <= boundary_band_m
             dA_to_A = np.linalg.norm(xz_A - cA, axis=1)
@@ -375,61 +388,58 @@ def correct_interpano_seams(
             if len(idx_A) < 4 or len(idx_B) < 4:
                 continue
 
-            rel_A = xz_A[idx_A] - mid_xz
-            rel_B = xz_B[idx_B] - mid_xz
-            dist_A = np.linalg.norm(rel_A, axis=1)
-            dist_B = np.linalg.norm(rel_B, axis=1)
-            theta_A = np.arctan2(rel_A[:, 1], rel_A[:, 0])
-            theta_B = np.arctan2(rel_B[:, 1], rel_B[:, 0])
+            mid_xz = (cA + cB) / 2.0
+            rel_A = xz_A[idx_A] - mid_xz   # (n_A, 2)
+            rel_B = xz_B[idx_B] - mid_xz   # (n_B, 2)
 
-            bin_A = np.clip(
-                ((theta_A + np.pi) / (2 * np.pi) * num_angle_bins).astype(np.int32), 0, num_angle_bins - 1
-            )
-            bin_B = np.clip(
-                ((theta_B + np.pi) / (2 * np.pi) * num_angle_bins).astype(np.int32), 0, num_angle_bins - 1
-            )
+            # Project onto tangent (bin axis) and normal (shift axis)
+            tang_A = rel_A @ tang_dir       # coord along boundary
+            tang_B = rel_B @ tang_dir
+            norm_A = rel_A @ norm_dir       # depth from midpoint (signed)
+            norm_B = rel_B @ norm_dir
 
-            med_A = np.full(num_angle_bins, np.nan, dtype=np.float32)
-            med_B = np.full(num_angle_bins, np.nan, dtype=np.float32)
-            for b in range(num_angle_bins):
+            # Bin along boundary tangent
+            all_tang = np.concatenate([tang_A, tang_B])
+            t_min = all_tang.min()
+            num_bins = max(int((all_tang.max() - t_min) / bin_width_m) + 1, 1)
+
+            bin_A = np.clip(((tang_A - t_min) / bin_width_m).astype(np.int32), 0, num_bins - 1)
+            bin_B = np.clip(((tang_B - t_min) / bin_width_m).astype(np.int32), 0, num_bins - 1)
+
+            med_norm_A = np.full(num_bins, np.nan, dtype=np.float32)
+            med_norm_B = np.full(num_bins, np.nan, dtype=np.float32)
+            for b in range(num_bins):
                 m = bin_A == b
                 if m.any():
-                    med_A[b] = np.median(dist_A[m])
+                    med_norm_A[b] = float(np.median(norm_A[m]))
                 m = bin_B == b
                 if m.any():
-                    med_B[b] = np.median(dist_B[m])
+                    med_norm_B[b] = float(np.median(norm_B[m]))
 
-            both_valid = ~np.isnan(med_A) & ~np.isnan(med_B)
+            both_valid = ~np.isnan(med_norm_A) & ~np.isnan(med_norm_B)
             if not both_valid.any():
-                print(f"  [Seam] Pano {pid_A}↔{pid_B}: no shared angle bins, skipping")
+                print(f"  [Seam] Pano {pid_A}↔{pid_B}: no shared tangent bins, skipping")
                 continue
 
-            # Target: midpoint where both have data; fill gaps from nearest shared bin
-            target = np.where(both_valid, (med_A + med_B) / 2.0, np.nan)
-            target = _fill_circular(target)
+            # Target normal-coord: midpoint between A and B medians
+            target_norm = np.where(both_valid, (med_norm_A + med_norm_B) / 2.0, np.nan).astype(np.float32)
+            target_norm = _fill_and_smooth(target_norm, smooth_sigma_bins)
 
-            if smooth_sigma_bins > 0:
-                target3 = np.tile(target, 3)
-                target3 = gaussian_filter1d(target3.astype(np.float64), sigma=smooth_sigma_bins)
-                target = target3[num_angle_bins: 2 * num_angle_bins].astype(np.float32)
+            # Shift each Gaussian in the normal direction to reach target
+            delta_norm_A = (target_norm[bin_A] - norm_A).astype(np.float32)  # (n_A,)
+            delta_norm_B = (target_norm[bin_B] - norm_B).astype(np.float32)  # (n_B,)
 
-            # Shift A toward target
-            t_A = target[bin_A]
-            ray_A = rel_A / np.maximum(dist_A, 1e-6)[:, None]
-            delta_A_xz = (t_A - dist_A)[:, None] * ray_A
+            delta_A_xz = delta_norm_A[:, None] * norm_dir.astype(np.float32)  # (n_A, 2)
+            delta_B_xz = delta_norm_B[:, None] * norm_dir.astype(np.float32)  # (n_B, 2)
+
             shifts[pid_A][idx_A, 0] += delta_A_xz[:, 0]
             shifts[pid_A][idx_A, 2] += delta_A_xz[:, 1]
-
-            # Shift B toward target
-            t_B = target[bin_B]
-            ray_B = rel_B / np.maximum(dist_B, 1e-6)[:, None]
-            delta_B_xz = (t_B - dist_B)[:, None] * ray_B
             shifts[pid_B][idx_B, 0] += delta_B_xz[:, 0]
             shifts[pid_B][idx_B, 2] += delta_B_xz[:, 1]
 
             print(
                 f"  [Seam] Pano {pid_A}↔{pid_B}: mean shift "
-                f"A={np.abs(delta_A_xz).mean():.3f}m  B={np.abs(delta_B_xz).mean():.3f}m"
+                f"A={np.abs(delta_norm_A).mean():.3f}m  B={np.abs(delta_norm_B).mean():.3f}m"
             )
 
     # Apply accumulated shifts (XZ only, Y untouched)
