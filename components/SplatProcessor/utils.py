@@ -5,6 +5,7 @@ import cv2
 import os
 from typing import Tuple, Optional
 from scipy.spatial.transform import Rotation
+from scipy.ndimage import gaussian_filter1d
 from sharp.utils.gaussians import Gaussians3D, apply_transform
 
 
@@ -312,6 +313,144 @@ def trim_by_pano_voronoi(
         colors=gaussians.colors[:, mask, :],
         opacities=gaussians.opacities[:, mask],
     )
+
+
+def correct_interpano_seams(
+    per_pano_merged: dict,
+    pano_centers: dict,
+    boundary_band_m: float = 3.0,
+    num_angle_bins: int = 180,
+    smooth_sigma_bins: float = 5.0,
+) -> dict:
+    """Shift near-boundary Gaussians toward the inter-pano depth midpoint.
+
+    For each pano pair (A, B): finds Gaussians within boundary_band_m of the
+    Voronoi boundary, bins them by XZ angle from the midpoint between pano centers,
+    computes median radial depth per bin from each pano, then shifts both sides
+    toward their midpoint to eliminate visible seams.
+    """
+    pids = list(per_pano_merged.keys())
+    if len(pids) < 2:
+        return per_pano_merged
+
+    positions = {
+        pid: splat.mean_vectors[0].detach().cpu().numpy()
+        for pid, splat in per_pano_merged.items()
+    }
+    shifts = {pid: np.zeros((len(positions[pid]), 3), dtype=np.float32) for pid in pids}
+
+    def _fill_circular(arr):
+        valid_idx = np.where(~np.isnan(arr))[0]
+        if len(valid_idx) == 0:
+            return arr
+        result = arr.copy()
+        for k in np.where(np.isnan(arr))[0]:
+            circ_dists = np.minimum(np.abs(valid_idx - k), num_angle_bins - np.abs(valid_idx - k))
+            result[k] = arr[valid_idx[np.argmin(circ_dists)]]
+        return result
+
+    for i in range(len(pids)):
+        for j in range(i + 1, len(pids)):
+            pid_A, pid_B = pids[i], pids[j]
+            if pid_A not in pano_centers or pid_B not in pano_centers:
+                continue
+
+            cA = pano_centers[pid_A][[0, 2]]
+            cB = pano_centers[pid_B][[0, 2]]
+            mid_xz = (cA + cB) / 2.0
+
+            xz_A = positions[pid_A][:, [0, 2]]
+            xz_B = positions[pid_B][:, [0, 2]]
+
+            # Near-boundary: |dist_to_A - dist_to_B| <= boundary_band_m
+            dA_to_A = np.linalg.norm(xz_A - cA, axis=1)
+            dA_to_B = np.linalg.norm(xz_A - cB, axis=1)
+            dB_to_A = np.linalg.norm(xz_B - cA, axis=1)
+            dB_to_B = np.linalg.norm(xz_B - cB, axis=1)
+
+            idx_A = np.where(np.abs(dA_to_A - dA_to_B) <= boundary_band_m)[0]
+            idx_B = np.where(np.abs(dB_to_A - dB_to_B) <= boundary_band_m)[0]
+
+            print(f"  [Seam] Pano {pid_A}↔{pid_B}: {len(idx_A)} + {len(idx_B)} boundary Gaussians")
+            if len(idx_A) < 4 or len(idx_B) < 4:
+                continue
+
+            rel_A = xz_A[idx_A] - mid_xz
+            rel_B = xz_B[idx_B] - mid_xz
+            dist_A = np.linalg.norm(rel_A, axis=1)
+            dist_B = np.linalg.norm(rel_B, axis=1)
+            theta_A = np.arctan2(rel_A[:, 1], rel_A[:, 0])
+            theta_B = np.arctan2(rel_B[:, 1], rel_B[:, 0])
+
+            bin_A = np.clip(
+                ((theta_A + np.pi) / (2 * np.pi) * num_angle_bins).astype(np.int32), 0, num_angle_bins - 1
+            )
+            bin_B = np.clip(
+                ((theta_B + np.pi) / (2 * np.pi) * num_angle_bins).astype(np.int32), 0, num_angle_bins - 1
+            )
+
+            med_A = np.full(num_angle_bins, np.nan, dtype=np.float32)
+            med_B = np.full(num_angle_bins, np.nan, dtype=np.float32)
+            for b in range(num_angle_bins):
+                m = bin_A == b
+                if m.any():
+                    med_A[b] = np.median(dist_A[m])
+                m = bin_B == b
+                if m.any():
+                    med_B[b] = np.median(dist_B[m])
+
+            both_valid = ~np.isnan(med_A) & ~np.isnan(med_B)
+            if not both_valid.any():
+                print(f"  [Seam] Pano {pid_A}↔{pid_B}: no shared angle bins, skipping")
+                continue
+
+            # Target: midpoint where both have data; fill gaps from nearest shared bin
+            target = np.where(both_valid, (med_A + med_B) / 2.0, np.nan)
+            target = _fill_circular(target)
+
+            if smooth_sigma_bins > 0:
+                target3 = np.tile(target, 3)
+                target3 = gaussian_filter1d(target3.astype(np.float64), sigma=smooth_sigma_bins)
+                target = target3[num_angle_bins: 2 * num_angle_bins].astype(np.float32)
+
+            # Shift A toward target
+            t_A = target[bin_A]
+            ray_A = rel_A / np.maximum(dist_A, 1e-6)[:, None]
+            delta_A_xz = (t_A - dist_A)[:, None] * ray_A
+            shifts[pid_A][idx_A, 0] += delta_A_xz[:, 0]
+            shifts[pid_A][idx_A, 2] += delta_A_xz[:, 1]
+
+            # Shift B toward target
+            t_B = target[bin_B]
+            ray_B = rel_B / np.maximum(dist_B, 1e-6)[:, None]
+            delta_B_xz = (t_B - dist_B)[:, None] * ray_B
+            shifts[pid_B][idx_B, 0] += delta_B_xz[:, 0]
+            shifts[pid_B][idx_B, 2] += delta_B_xz[:, 1]
+
+            print(
+                f"  [Seam] Pano {pid_A}↔{pid_B}: mean shift "
+                f"A={np.abs(delta_A_xz).mean():.3f}m  B={np.abs(delta_B_xz).mean():.3f}m"
+            )
+
+    # Apply accumulated shifts (XZ only, Y untouched)
+    result = {}
+    for pid, splat in per_pano_merged.items():
+        sh = shifts[pid]
+        if not np.any(sh):
+            result[pid] = splat
+            continue
+        device = splat.mean_vectors.device
+        sh_t = torch.tensor(sh, dtype=torch.float32, device=device)
+        new_mv = splat.mean_vectors.clone()
+        new_mv[0] += sh_t
+        result[pid] = Gaussians3D(
+            mean_vectors=new_mv,
+            singular_values=splat.singular_values,
+            quaternions=splat.quaternions,
+            colors=splat.colors,
+            opacities=splat.opacities,
+        )
+    return result
 
 
 def merge(splats_list: list[Gaussians3D]) -> Gaussians3D:

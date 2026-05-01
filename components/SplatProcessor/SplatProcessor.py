@@ -9,6 +9,7 @@ from components.SplatProcessor.utils import (
     trim_by_fov,
     trim_by_max_depth,
     trim_by_pano_voronoi,
+    correct_interpano_seams,
     merge,
 )
 from components.SplatProcessor.alignment import (
@@ -31,12 +32,14 @@ class SplatProcessor:
         smooth_sigma_m: float = 0.5,
         smooth_sigma_fov: float = 0.15,
         voronoi_buffer_m: float = 1.0,
+        seam_band_m: float = 3.0,
     ):
         self.num_z_slabs = num_z_slabs
         self.num_fov_slabs = num_fov_slabs
         self.smooth_sigma_m = smooth_sigma_m
         self.smooth_sigma_fov = smooth_sigma_fov
         self.voronoi_buffer_m = voronoi_buffer_m
+        self.seam_band_m = seam_band_m
 
     def process(
         self,
@@ -216,5 +219,12 @@ class SplatProcessor:
                     per_pano_merged[pid] = trim_by_pano_voronoi(
                         per_pano_merged[pid], own, others, self.voronoi_buffer_m
                     )
+
+                print("--- Step: Inter-pano Seam Correction ---")
+                per_pano_merged = correct_interpano_seams(
+                    per_pano_merged,
+                    pano_centers,
+                    boundary_band_m=self.seam_band_m,
+                )
 
         return merge(list(per_pano_merged.values())), per_pano_merged
