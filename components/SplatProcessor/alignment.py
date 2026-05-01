@@ -2,7 +2,7 @@ import math
 
 import numpy as np
 import torch
-from scipy.ndimage import distance_transform_edt, gaussian_filter1d
+from scipy.ndimage import distance_transform_edt, gaussian_filter1d, gaussian_filter
 
 from sharp.utils.gaussians import Gaussians3D
 from components.SplatProcessor.utils import (
@@ -224,6 +224,99 @@ def align_da3_zslab(
     # Assign each valid Gaussian the smoothed scale of its slab (vectorised).
     per_gauss_scale = np.full(len(ctx["pixel_x"]), global_median, dtype=np.float32)
     per_gauss_scale[valid_idx] = full_scales[slab_idx]
+
+    return _apply_per_gauss_scale(gaussians, per_gauss_scale)
+
+
+def align_da3_2dgrid(
+    gaussians: Gaussians3D,
+    reference_depth: np.ndarray,
+    focal_x_px: float,
+    focal_y_px: float,
+    image_width: int,
+    image_height: int,
+    num_z_slabs: int,
+    num_fov_slabs: int,
+    max_depth: float,
+    smooth_sigma_m: float = 0.5,
+    smooth_sigma_fov: float = 0.15,
+) -> Gaussians3D:
+    """2D grid alignment: Z-depth × horizontal FOV bins.
+
+    Each cell gets the median DA3/SHARP scale ratio, empty cells are filled
+    by nearest-neighbour propagation, then a 2D Gaussian smooth blends
+    adjacent cells before applying per-Gaussian scales.
+    """
+    pixel_x, pixel_y, depth_z, _, valid = project_gaussians_to_2d(
+        gaussians, focal_x_px, focal_y_px, image_width, image_height
+    )
+    n_valid = int(valid.sum())
+    print(f"  [DA3 2dgrid] Valid Gaussians: {n_valid} / {len(pixel_x)}")
+    if n_valid < 16:
+        return gaussians
+
+    valid_idx = np.where(valid)[0]
+    valid_px = pixel_x[valid_idx]
+    valid_dz = np.clip(depth_z[valid_idx], 1e-6, None)
+
+    # Look up DA3 reference depth at each Gaussian's projected pixel
+    px_int = np.clip(np.round(valid_px).astype(np.int32), 0, image_width - 1)
+    py_int = np.clip(np.round(pixel_y[valid_idx]).astype(np.int32), 0, image_height - 1)
+    ref_at_gauss = reference_depth[py_int, px_int]
+    has_ref = ref_at_gauss > 0
+
+    if not has_ref.any():
+        return gaussians
+
+    raw_scales = ref_at_gauss[has_ref] / valid_dz[has_ref]
+    global_median = float(np.median(raw_scales))
+    print(f"  [DA3 2dgrid] Global median scale: {global_median:.4f}")
+    if global_median <= 0:
+        return gaussians
+
+    # Bin into 2D grid (z_bin × fov_bin)
+    z_thick = max_depth / num_z_slabs
+    z_bins = np.clip((valid_dz[has_ref] / z_thick).astype(np.int32), 0, num_z_slabs - 1)
+    fov_bins = np.clip(
+        (valid_px[has_ref] / image_width * num_fov_slabs).astype(np.int32), 0, num_fov_slabs - 1
+    )
+
+    # Group by flat cell index, compute median per cell
+    grid = np.full((num_z_slabs, num_fov_slabs), np.nan, dtype=np.float32)
+    flat_idx = z_bins * num_fov_slabs + fov_bins
+    sort_order = np.argsort(flat_idx)
+    sorted_flat = flat_idx[sort_order]
+    sorted_scales = raw_scales[sort_order]
+    boundaries = np.flatnonzero(np.diff(sorted_flat)) + 1
+    groups = np.split(sorted_scales, boundaries)
+    unique_flat = sorted_flat[np.concatenate([[0], boundaries])]
+    cell_medians = np.array([np.median(g) for g in groups], dtype=np.float32)
+    grid[unique_flat // num_fov_slabs, unique_flat % num_fov_slabs] = cell_medians
+
+    occupied = len(unique_flat)
+    total = num_z_slabs * num_fov_slabs
+    print(f"  [DA3 2dgrid] Occupied cells: {occupied} / {total} ({100*occupied/total:.1f}%)")
+
+    # Fill empty cells by nearest occupied cell, then 2D Gaussian smooth
+    empty = np.isnan(grid)
+    if empty.any() and (~empty).any():
+        _, nearest = distance_transform_edt(empty, return_indices=True)
+        grid[empty] = grid[nearest[0][empty], nearest[1][empty]]
+    elif empty.all():
+        grid[:] = global_median
+
+    sigma_z = smooth_sigma_m / z_thick
+    sigma_fov = smooth_sigma_fov * num_fov_slabs
+    grid = gaussian_filter(grid, sigma=[sigma_z, sigma_fov]).astype(np.float32)
+    print(f"  [DA3 2dgrid] Smooth sigma: z={sigma_z:.1f} slabs, fov={sigma_fov:.1f} slabs")
+
+    # Assign each valid Gaussian its cell's smoothed scale
+    all_z_bins = np.clip((np.clip(depth_z[valid_idx], 1e-6, None) / z_thick).astype(np.int32), 0, num_z_slabs - 1)
+    all_fov_bins = np.clip(
+        (pixel_x[valid_idx] / image_width * num_fov_slabs).astype(np.int32), 0, num_fov_slabs - 1
+    )
+    per_gauss_scale = np.full(len(pixel_x), global_median, dtype=np.float32)
+    per_gauss_scale[valid_idx] = grid[all_z_bins, all_fov_bins]
 
     return _apply_per_gauss_scale(gaussians, per_gauss_scale)
 

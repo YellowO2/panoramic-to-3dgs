@@ -15,6 +15,7 @@ from components.SplatProcessor.alignment import (
     align_near_edge,
     align_da3_per_point,
     align_da3_zslab,
+    align_da3_2dgrid,
     align_da3_y_ground,
     elevation_estimate,
 )
@@ -23,9 +24,18 @@ from components.SplatProcessor.alignment import (
 class SplatProcessor:
     MAX_DEPTH = 10.0
 
-    def __init__(self, num_z_slabs: int = 500, smooth_sigma_m: float = 0.5, voronoi_buffer_m: float = 1.0):
+    def __init__(
+        self,
+        num_z_slabs: int = 500,
+        num_fov_slabs: int = 50,
+        smooth_sigma_m: float = 0.5,
+        smooth_sigma_fov: float = 0.15,
+        voronoi_buffer_m: float = 1.0,
+    ):
         self.num_z_slabs = num_z_slabs
+        self.num_fov_slabs = num_fov_slabs
         self.smooth_sigma_m = smooth_sigma_m
+        self.smooth_sigma_fov = smooth_sigma_fov
         self.voronoi_buffer_m = voronoi_buffer_m
 
     def process(
@@ -64,15 +74,17 @@ class SplatProcessor:
         print(f"--- Scale mode: {scale_mode} ---")
         if scale_mode == "near_edge":
             trimmed = align_near_edge(views, trimmed)
-        elif scale_mode in ("da3_per_point", "da3_zslab", "da3_zslab_global"):
+        elif scale_mode in (
+            "da3_per_point", "da3_zslab", "da3_zslab_global", "da3_2dgrid", "da3_2dgrid_global"
+        ):
             all_da3_pts = None
-            if scale_mode == "da3_zslab_global" and isinstance(da3_world_pts, dict):
+            if scale_mode in ("da3_zslab_global", "da3_2dgrid_global") and isinstance(da3_world_pts, dict):
                 parts = [pts for pts in da3_world_pts.values() if pts is not None]
                 all_da3_pts = np.concatenate(parts, axis=0) if parts else None
 
             for i, (view, splat) in enumerate(zip(views, trimmed)):
                 _, center, _, R_c2w = view_poses[i]
-                if scale_mode == "da3_zslab_global":
+                if scale_mode in ("da3_zslab_global", "da3_2dgrid_global"):
                     pts = all_da3_pts
                 else:
                     pts = (
@@ -98,7 +110,7 @@ class SplatProcessor:
                         int(view.width),
                         int(view.height),
                     )
-                else:
+                elif scale_mode in ("da3_zslab", "da3_zslab_global"):
                     trimmed[i] = align_da3_zslab(
                         splat,
                         ref_depth,
@@ -109,6 +121,20 @@ class SplatProcessor:
                         self.num_z_slabs,
                         self.MAX_DEPTH,
                         self.smooth_sigma_m,
+                    )
+                else:  # da3_2dgrid, da3_2dgrid_global
+                    trimmed[i] = align_da3_2dgrid(
+                        splat,
+                        ref_depth,
+                        view.focal_px,
+                        view.focal_px,
+                        int(view.width),
+                        int(view.height),
+                        self.num_z_slabs,
+                        self.num_fov_slabs,
+                        self.MAX_DEPTH,
+                        self.smooth_sigma_m,
+                        self.smooth_sigma_fov,
                     )
         elif scale_mode == "da3_y_ground":
             # Pre-compute DA3 elevation target once per panorama.
