@@ -223,6 +223,7 @@ class SplatProcessor:
                     per_pano_merged,
                     pano_centers,
                     voronoi_buffer_m=self.voronoi_buffer_m,
+                    seam_band_m=self.voronoi_buffer_m * 4,
                 )
 
         return merge(list(per_pano_merged.values())), per_pano_merged

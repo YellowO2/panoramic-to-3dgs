@@ -319,20 +319,25 @@ def correct_interpano_seams(
     per_pano_merged: dict,
     pano_centers: dict,
     voronoi_buffer_m: float = 1.5,
-    cell_size_m: float = 2.0,
-    smooth_sigma_cells: float = 1.5,
+    seam_band_m: float = 4.0,
+    tang_bin_m: float = 1.0,
+    y_bin_m: float = 0.5,
+    smooth_sigma: float = 1.5,
 ) -> dict:
-    """Scale near-boundary Gaussians from each pano toward their shared depth midpoint.
+    """Close depth seams between adjacent panoramas using boundary-plane projection.
 
-    Analogous to align_da3_per_point, but the two Gaussian layers reference each
-    other instead of a DA3 depth map.  For each XZ grid cell that has Gaussians
-    from both pano A and pano B:
-      - Compute 3-D median position of A's group → P_A, and B's group → P_B.
-      - Midpoint P_mid = (P_A + P_B) / 2.
-      - Scale A's Gaussians radially from cA so their depth matches |P_mid - cA|.
-      - Scale B's Gaussians radially from cB so their depth matches |P_mid - cB|.
-      - Taper the scale correction to 1.0 at the far edge of boundary_band_m so
-        the adjustment fades smoothly away from the seam.
+    For each pano pair (A, B), a virtual plane is placed at the midpoint between
+    their centers, oriented perpendicular to the A→B direction.  Both panos'
+    near-boundary Gaussians are projected onto this plane via two axes:
+      - tangent: direction along the Voronoi boundary line
+      - Y: world vertical
+
+    Gaussians from A and B that represent the same surface land in the same
+    (tangent, Y) bin regardless of which side of the boundary they are on.
+    Within each shared bin the median depth from the plane is computed for A and
+    B separately; both are shifted in the A→B normal direction toward their
+    midpoint depth.  Correction is tapered to zero at seam_band_m so the fix
+    fades smoothly away from the boundary.
     """
     from scipy.ndimage import distance_transform_edt, gaussian_filter
 
@@ -344,8 +349,7 @@ def correct_interpano_seams(
         pid: splat.mean_vectors[0].detach().cpu().numpy().astype(np.float64)
         for pid, splat in per_pano_merged.items()
     }
-    # Accumulate per-Gaussian effective scale (start at 1 = no change)
-    eff_scale = {pid: np.ones(len(positions[pid]), dtype=np.float32) for pid in pids}
+    shifts = {pid: np.zeros((len(positions[pid]), 3), dtype=np.float32) for pid in pids}
 
     def _fill_smooth_2d(grid_2d, sigma):
         empty = np.isnan(grid_2d)
@@ -353,7 +357,7 @@ def correct_interpano_seams(
             _, nearest = distance_transform_edt(empty, return_indices=True)
             grid_2d[empty] = grid_2d[nearest[0][empty], nearest[1][empty]]
         elif empty.all():
-            grid_2d[:] = 1.0
+            grid_2d[:] = 0.0
         if sigma > 0:
             grid_2d = gaussian_filter(grid_2d.astype(np.float64), sigma=sigma).astype(np.float32)
         return grid_2d
@@ -364,119 +368,117 @@ def correct_interpano_seams(
             if pid_A not in pano_centers or pid_B not in pano_centers:
                 continue
 
-            cA = pano_centers[pid_A].astype(np.float64)   # (3,) world
-            cB = pano_centers[pid_B].astype(np.float64)
-            cA_xz = cA[[0, 2]]
-            cB_xz = cB[[0, 2]]
+            cA_xz = pano_centers[pid_A][[0, 2]].astype(np.float64)
+            cB_xz = pano_centers[pid_B][[0, 2]].astype(np.float64)
+            sep = cB_xz - cA_xz
+            sep_len = np.linalg.norm(sep)
+            if sep_len < 1e-3:
+                continue
 
-            pos_A = positions[pid_A]   # (N_A, 3)
-            pos_B = positions[pid_B]   # (N_B, 3)
-            xz_A = pos_A[:, [0, 2]]
-            xz_B = pos_B[:, [0, 2]]
+            # Boundary-plane axes
+            norm_xz = sep / sep_len                            # A→B, depth axis
+            tang_xz = np.array([-norm_xz[1], norm_xz[0]])    # along boundary
+            mid_xz  = (cA_xz + cB_xz) / 2.0
 
-            # Voronoi boundary proximity: 0 = on boundary, grows away from it
-            dA_own = np.linalg.norm(xz_A - cA_xz, axis=1)
+            pos_A = positions[pid_A]
+            pos_B = positions[pid_B]
+            xz_A  = pos_A[:, [0, 2]]
+            xz_B  = pos_B[:, [0, 2]]
+
+            dA_own   = np.linalg.norm(xz_A - cA_xz, axis=1)
             dA_other = np.linalg.norm(xz_A - cB_xz, axis=1)
-            dB_own = np.linalg.norm(xz_B - cB_xz, axis=1)
+            dB_own   = np.linalg.norm(xz_B - cB_xz, axis=1)
             dB_other = np.linalg.norm(xz_B - cA_xz, axis=1)
-            bdist_A = np.abs(dA_own - dA_other)
-            bdist_B = np.abs(dB_own - dB_other)
+            bdist_A  = np.abs(dA_own - dA_other)
+            bdist_B  = np.abs(dB_own - dB_other)
 
-            idx_A = np.where(bdist_A <= voronoi_buffer_m)[0]
-            idx_B = np.where(bdist_B <= voronoi_buffer_m)[0]
+            idx_A = np.where(bdist_A <= seam_band_m)[0]
+            idx_B = np.where(bdist_B <= seam_band_m)[0]
 
             print(f"  [Seam] Pano {pid_A}↔{pid_B}: {len(idx_A)} + {len(idx_B)} boundary Gaussians")
             if len(idx_A) < 4 or len(idx_B) < 4:
                 continue
 
-            near_pos_A = pos_A[idx_A]          # (n_A, 3)
-            near_pos_B = pos_B[idx_B]          # (n_B, 3)
-            near_xz_A = xz_A[idx_A]
-            near_xz_B = xz_B[idx_B]
+            near_pos_A = pos_A[idx_A]
+            near_pos_B = pos_B[idx_B]
+            near_xz_A  = xz_A[idx_A]
+            near_xz_B  = xz_B[idx_B]
 
-            # Build XZ grid over the union of near-boundary Gaussians
-            all_xz = np.concatenate([near_xz_A, near_xz_B], axis=0)
-            x_min, z_min = all_xz[:, 0].min(), all_xz[:, 1].min()
-            nx = max(int((all_xz[:, 0].max() - x_min) / cell_size_m) + 1, 1)
-            nz = max(int((all_xz[:, 1].max() - z_min) / cell_size_m) + 1, 1)
+            # Project onto boundary-plane axes
+            tang_A  = (near_xz_A - mid_xz) @ tang_xz   # coord along boundary
+            tang_B  = (near_xz_B - mid_xz) @ tang_xz
+            depth_A = (near_xz_A - mid_xz) @ norm_xz   # signed depth from plane
+            depth_B = (near_xz_B - mid_xz) @ norm_xz
+            y_A     = near_pos_A[:, 1]
+            y_B     = near_pos_B[:, 1]
 
-            def to_cell(xz):
-                cx = np.clip(((xz[:, 0] - x_min) / cell_size_m).astype(np.int32), 0, nx - 1)
-                cz = np.clip(((xz[:, 1] - z_min) / cell_size_m).astype(np.int32), 0, nz - 1)
-                return cx, cz
+            # 2D grid: tangent × Y
+            all_tang = np.concatenate([tang_A, tang_B])
+            all_y    = np.concatenate([y_A,    y_B])
+            t_min, t_max = all_tang.min(), all_tang.max()
+            y_min, y_max = all_y.min(),    all_y.max()
+            n_tang = max(int((t_max - t_min) / tang_bin_m) + 1, 1)
+            n_y    = max(int((y_max - y_min) / y_bin_m)    + 1, 1)
 
-            cx_A, cz_A = to_cell(near_xz_A)
-            cx_B, cz_B = to_cell(near_xz_B)
-            flat_A = cx_A * nz + cz_A   # (n_A,)
-            flat_B = cx_B * nz + cz_B   # (n_B,)
+            def to_bin(tang, y):
+                bt = np.clip(((tang - t_min) / tang_bin_m).astype(np.int32), 0, n_tang - 1)
+                by = np.clip(((y    - y_min) / y_bin_m   ).astype(np.int32), 0, n_y    - 1)
+                return bt * n_y + by
 
-            # Per-cell scale factors: scale from own pano center so depth → |P_mid - center|
-            sgrid_A = np.full((nx * nz,), np.nan, dtype=np.float32)
-            sgrid_B = np.full((nx * nz,), np.nan, dtype=np.float32)
-            n_shared = 0
+            bin_A = to_bin(tang_A, y_A)
+            bin_B = to_bin(tang_B, y_B)
 
-            for flat in np.unique(flat_A):
-                m_B = flat_B == flat
-                if not m_B.any():
-                    continue
-                m_A = flat_A == flat
-                P_A = np.median(near_pos_A[m_A], axis=0)
-                P_B = np.median(near_pos_B[m_B], axis=0)
-                P_mid = (P_A + P_B) / 2.0
+            # Per-bin median depth for A and B
+            depth_grid_A = np.full((n_tang * n_y,), np.nan, dtype=np.float32)
+            depth_grid_B = np.full((n_tang * n_y,), np.nan, dtype=np.float32)
+            for b in np.unique(bin_A):
+                depth_grid_A[b] = float(np.median(depth_A[bin_A == b]))
+            for b in np.unique(bin_B):
+                depth_grid_B[b] = float(np.median(depth_B[bin_B == b]))
 
-                d_A = np.linalg.norm(P_A - cA)
-                d_B = np.linalg.norm(P_B - cB)
-                d_mid_A = np.linalg.norm(P_mid - cA)
-                d_mid_B = np.linalg.norm(P_mid - cB)
-
-                if d_A > 1e-6:
-                    sgrid_A[flat] = float(d_mid_A / d_A)
-                if d_B > 1e-6:
-                    sgrid_B[flat] = float(d_mid_B / d_B)
-                n_shared += 1
-
-            print(f"  [Seam] Pano {pid_A}↔{pid_B}: {n_shared} shared cells")
+            both = ~np.isnan(depth_grid_A) & ~np.isnan(depth_grid_B)
+            n_shared = int(both.sum())
+            print(f"  [Seam] Pano {pid_A}↔{pid_B}: {n_shared} shared (tang×Y) bins")
             if n_shared == 0:
+                print(f"  [Seam] No shared bins — consider increasing voronoi_buffer_m")
                 continue
 
-            # Fill empty cells + smooth
-            sgrid_A = _fill_smooth_2d(sgrid_A.reshape(nx, nz), smooth_sigma_cells).reshape(-1)
-            sgrid_B = _fill_smooth_2d(sgrid_B.reshape(nx, nz), smooth_sigma_cells).reshape(-1)
+            # Target depth = midpoint; fill empties from nearest shared bin then smooth
+            target = np.where(both, (depth_grid_A + depth_grid_B) / 2.0, np.nan).astype(np.float32)
+            target = _fill_smooth_2d(target.reshape(n_tang, n_y), smooth_sigma).reshape(-1)
 
-            # Taper: 1.0 right at boundary, 0.0 at boundary_band_m
-            taper_A = (1.0 - bdist_A[idx_A] / voronoi_buffer_m).clip(0.0, 1.0).astype(np.float32)
-            taper_B = (1.0 - bdist_B[idx_B] / voronoi_buffer_m).clip(0.0, 1.0).astype(np.float32)
+            # Taper: full correction at Voronoi boundary, zero at seam_band_m
+            taper_A = (1.0 - bdist_A[idx_A] / seam_band_m).clip(0.0, 1.0).astype(np.float32)
+            taper_B = (1.0 - bdist_B[idx_B] / seam_band_m).clip(0.0, 1.0).astype(np.float32)
 
-            # Effective scale = lerp(1.0, grid_scale, taper)
-            eff_A = 1.0 + taper_A * (sgrid_A[flat_A] - 1.0)
-            eff_B = 1.0 + taper_B * (sgrid_B[flat_B] - 1.0)
+            # Shift in norm_xz direction (XZ only, Y untouched)
+            delta_A = ((target[bin_A] - depth_A) * taper_A).astype(np.float32)
+            delta_B = ((target[bin_B] - depth_B) * taper_B).astype(np.float32)
 
-            eff_scale[pid_A][idx_A] = eff_A.astype(np.float32)
-            eff_scale[pid_B][idx_B] = eff_B.astype(np.float32)
+            shifts[pid_A][idx_A, 0] += (delta_A * norm_xz[0]).astype(np.float32)
+            shifts[pid_A][idx_A, 2] += (delta_A * norm_xz[1]).astype(np.float32)
+            shifts[pid_B][idx_B, 0] += (delta_B * norm_xz[0]).astype(np.float32)
+            shifts[pid_B][idx_B, 2] += (delta_B * norm_xz[1]).astype(np.float32)
 
             print(
                 f"  [Seam] Pano {pid_A}↔{pid_B}: "
-                f"mean scale A={eff_A.mean():.4f}  B={eff_B.mean():.4f}"
+                f"mean shift A={np.abs(delta_A).mean():.3f}m  B={np.abs(delta_B).mean():.3f}m"
             )
 
-    # Apply scale corrections radially from each pano's own center
+    # Apply shifts (position only — no size change since this is a translation)
     result = {}
     for pid, splat in per_pano_merged.items():
-        sc = eff_scale[pid]
-        if np.allclose(sc, 1.0):
+        sh = shifts[pid]
+        if not np.any(sh):
             result[pid] = splat
             continue
-
         device = splat.mean_vectors.device
-        ctr = torch.tensor(pano_centers[pid], dtype=torch.float32, device=device)
-        sc_t = torch.tensor(sc, dtype=torch.float32, device=device)
-
-        mv = splat.mean_vectors.clone()                      # (1, N, 3)
-        mv[0] = ctr + (mv[0] - ctr) * sc_t[:, None]        # scale from center
-
+        sh_t   = torch.tensor(sh, dtype=torch.float32, device=device)
+        new_mv = splat.mean_vectors.clone()
+        new_mv[0] += sh_t
         result[pid] = Gaussians3D(
-            mean_vectors=mv,
-            singular_values=splat.singular_values * sc_t[None, :, None],
+            mean_vectors=new_mv,
+            singular_values=splat.singular_values,
             quaternions=splat.quaternions,
             colors=splat.colors,
             opacities=splat.opacities,

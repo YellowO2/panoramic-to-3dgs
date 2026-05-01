@@ -1,5 +1,9 @@
 # Panoramic to 3DGS
 
+## TODO:
+- Allow lower pitch for the da3 view extracting process
+- Allow pipeline of large amounts of panorama like 30 panoramas. This means saving per pano, and processing da3 such that common points it shared.
+
 ## Project Goal
 Convert nearby Google Street View-style panoramas (equirectangular) into a merged 3D Gaussian Splat scene for novel view synthesis and immersive visualisation.
 
