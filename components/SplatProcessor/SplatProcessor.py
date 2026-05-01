@@ -20,7 +20,7 @@ from components.SplatProcessor.alignment import (
 
 
 class SplatProcessor:
-    MAX_DEPTH = 15.0
+    MAX_DEPTH = 10.0
 
     def __init__(self, num_z_slabs: int = 500):
         self.num_z_slabs = num_z_slabs
