@@ -318,7 +318,7 @@ def trim_by_pano_voronoi(
 def correct_interpano_seams(
     per_pano_merged: dict,
     pano_centers: dict,
-    boundary_band_m: float = 3.0,
+    voronoi_buffer_m: float = 1.5,
     cell_size_m: float = 2.0,
     smooth_sigma_cells: float = 1.5,
 ) -> dict:
@@ -382,8 +382,8 @@ def correct_interpano_seams(
             bdist_A = np.abs(dA_own - dA_other)
             bdist_B = np.abs(dB_own - dB_other)
 
-            idx_A = np.where(bdist_A <= boundary_band_m)[0]
-            idx_B = np.where(bdist_B <= boundary_band_m)[0]
+            idx_A = np.where(bdist_A <= voronoi_buffer_m)[0]
+            idx_B = np.where(bdist_B <= voronoi_buffer_m)[0]
 
             print(f"  [Seam] Pano {pid_A}↔{pid_B}: {len(idx_A)} + {len(idx_B)} boundary Gaussians")
             if len(idx_A) < 4 or len(idx_B) < 4:
@@ -444,8 +444,8 @@ def correct_interpano_seams(
             sgrid_B = _fill_smooth_2d(sgrid_B.reshape(nx, nz), smooth_sigma_cells).reshape(-1)
 
             # Taper: 1.0 right at boundary, 0.0 at boundary_band_m
-            taper_A = (1.0 - bdist_A[idx_A] / boundary_band_m).clip(0.0, 1.0).astype(np.float32)
-            taper_B = (1.0 - bdist_B[idx_B] / boundary_band_m).clip(0.0, 1.0).astype(np.float32)
+            taper_A = (1.0 - bdist_A[idx_A] / voronoi_buffer_m).clip(0.0, 1.0).astype(np.float32)
+            taper_B = (1.0 - bdist_B[idx_B] / voronoi_buffer_m).clip(0.0, 1.0).astype(np.float32)
 
             # Effective scale = lerp(1.0, grid_scale, taper)
             eff_A = 1.0 + taper_A * (sgrid_A[flat_A] - 1.0)
