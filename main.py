@@ -88,7 +88,7 @@ def run_panoramic_pipeline(
     # 6. Process and Merge
     print("--- Step: Splat Processing (Alignment/Merge) ---")
     processor = SplatProcessor()
-    merged_splat, per_pano_splats = processor.process(all_sharp_views, gaussian_list, pano_poses=pano_poses, da3_world_pts=da3_pts_per_pano, scale_mode="da3")
+    merged_splat, per_pano_splats = processor.process(all_sharp_views, gaussian_list, pano_poses=pano_poses, da3_world_pts=da3_pts_per_pano, scale_mode="da3_zslab")
 
     # 7. Save Final Result
     ref_view = all_sharp_views[0]
