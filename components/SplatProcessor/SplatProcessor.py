@@ -31,7 +31,7 @@ class SplatProcessor:
         num_fov_slabs: int = 50,
         smooth_sigma_m: float = 0.5,
         smooth_sigma_fov: float = 0.15,
-        voronoi_buffer_m: float = 1.0,
+        voronoi_buffer_m: float = 1.5,
         seam_band_m: float = 3.0,
     ):
         self.num_z_slabs = num_z_slabs
