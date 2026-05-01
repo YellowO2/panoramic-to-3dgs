@@ -113,7 +113,7 @@ class SplatProcessor:
                     pano_rot = pano_data["rotation"]
                     R_w2c = pano_rot  # R_w2c = (pano_rot.T).T = pano_rot
                     pts_cam = (R_w2c @ (world_pts - center).T).T
-                    elev = elevation_estimate(pts_cam[:, 1])
+                    elev = elevation_estimate(pts_cam[:, 1], pts_cam[:, 2])
                     if elev is not None and elev > 1e-6:
                         da3_elev_per_pano[pano_id] = elev
                         print(

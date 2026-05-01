@@ -16,12 +16,19 @@ from components.SplatProcessor.utils import (
 # ---------------------------------------------------------------------------
 
 
-def elevation_estimate(y_values: np.ndarray) -> float | None:
-    """99th percentile of Y as ground-level estimate (Y-down: high positive Y = ground)."""
-    y = y_values[np.isfinite(y_values)]
-    if len(y) < 4:
+def elevation_estimate(y_values: np.ndarray, z_values: np.ndarray, z_percentile: float = 0.5) -> float | None:
+    """Ground elevation: filter to nearest z_percentile% by Z, then 99th percentile of Y.
+
+    Nearby points (small Z) are reliably ground-level. Y-down: large positive Y = ground.
+    """
+    valid = np.isfinite(y_values) & np.isfinite(z_values) & (z_values > 0)
+    if valid.sum() < 4:
         return None
-    return float(np.percentile(y, 99))
+    z_thresh = np.percentile(z_values[valid], z_percentile)
+    close = valid & (z_values <= z_thresh)
+    if close.sum() < 4:
+        return None
+    return float(np.percentile(y_values[close], 99))
 
 
 def _voronoi_common(gaussians, reference_depth, focal_x_px, focal_y_px, image_width, image_height):
@@ -213,8 +220,8 @@ def align_da3_y_ground(
     Elevation is the 99th percentile of Y (Y-down: large positive Y = ground).
     da3_elev_target is pre-computed once per panorama before the slice loop.
     """
-    y_sharp = gaussians.mean_vectors[0, :, 1].detach().cpu().numpy()
-    sharp_elev = elevation_estimate(y_sharp)
+    mv = gaussians.mean_vectors[0].detach().cpu().numpy()
+    sharp_elev = elevation_estimate(mv[:, 1], mv[:, 2])
 
     if sharp_elev is None or sharp_elev <= 1e-6:
         print("  [Y-ground] Invalid SHARP elevation, skipping.")
