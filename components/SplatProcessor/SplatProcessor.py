@@ -18,6 +18,7 @@ from components.SplatProcessor.alignment import (
     align_da3_zslab,
     align_da3_2dgrid,
     align_da3_y_ground,
+    align_ground_view,
     elevation_estimate,
 )
 
@@ -71,15 +72,39 @@ class SplatProcessor:
         # Step 1: trim far points (camera space)
         trimmed = [trim_by_max_depth(splat, self.MAX_DEPTH) for splat in splats_list]
 
+        # Pre-compute DA3 ground elevation per pano (used by da3_y_ground mode and ground slice pass).
+        da3_elev_per_pano: dict[int, float] = {}
+        if isinstance(da3_world_pts, dict) and pano_poses:
+            for pano_id, world_pts in da3_world_pts.items():
+                pano_data = pano_poses.get(pano_id)
+                if pano_data is None:
+                    continue
+                center = pano_data["center"]
+                pano_rot = pano_data["rotation"]
+                R_w2c = pano_rot
+                pts_cam = (R_w2c @ (world_pts - center).T).T
+                elev = elevation_estimate(pts_cam[:, 1], pts_cam[:, 2])
+                if elev is not None and elev > 1e-6:
+                    da3_elev_per_pano[pano_id] = elev
+                    print(f"  [DA3 elev] Pano {pano_id}: {elev:.4f}")
+                else:
+                    print(f"  [DA3 elev] Pano {pano_id}: invalid, will skip ground alignment.")
+
         # Step 2: scale alignment
         print(f"--- Scale mode: {scale_mode} ---")
         if scale_mode == "near_edge":
             trimmed = align_near_edge(views, trimmed)
         elif scale_mode in (
-            "da3_per_point", "da3_zslab", "da3_zslab_global", "da3_2dgrid", "da3_2dgrid_global"
+            "da3_per_point",
+            "da3_zslab",
+            "da3_zslab_global",
+            "da3_2dgrid",
+            "da3_2dgrid_global",
         ):
             all_da3_pts = None
-            if scale_mode in ("da3_zslab_global", "da3_2dgrid_global") and isinstance(da3_world_pts, dict):
+            if scale_mode in ("da3_zslab_global", "da3_2dgrid_global") and isinstance(
+                da3_world_pts, dict
+            ):
                 parts = [pts for pts in da3_world_pts.values() if pts is not None]
                 all_da3_pts = np.concatenate(parts, axis=0) if parts else None
 
@@ -95,7 +120,9 @@ class SplatProcessor:
                     )
                 ref_depth = None
                 if pts is not None and center is not None:
-                    ref_depth = project_world_cloud_to_view(pts, center, R_c2w, view, max_depth=self.MAX_DEPTH * 1.5)
+                    ref_depth = project_world_cloud_to_view(
+                        pts, center, R_c2w, view, max_depth=self.MAX_DEPTH * 1.5
+                    )
                 elif view.depth is not None:
                     ref_depth = view.depth
 
@@ -139,35 +166,21 @@ class SplatProcessor:
                         self.smooth_sigma_fov,
                     )
         elif scale_mode == "da3_y_ground":
-            # Pre-compute DA3 elevation target once per panorama.
-            # For pitch=0 slices, yaw rotation doesn't affect Y, so any R_c2w works —
-            # we use pano_rot.T (equivalent to yaw=0 slice).
-            da3_elev_per_pano: dict[int, float] = {}
-            if isinstance(da3_world_pts, dict) and pano_poses:
-                for pano_id, world_pts in da3_world_pts.items():
-                    pano_data = pano_poses.get(pano_id)
-                    if pano_data is None:
-                        continue
-                    center = pano_data["center"]
-                    pano_rot = pano_data["rotation"]
-                    R_w2c = pano_rot  # R_w2c = (pano_rot.T).T = pano_rot
-                    pts_cam = (R_w2c @ (world_pts - center).T).T
-                    elev = elevation_estimate(pts_cam[:, 1], pts_cam[:, 2])
-                    if elev is not None and elev > 1e-6:
-                        da3_elev_per_pano[pano_id] = elev
-                        print(
-                            f"  [Y-ground] Pano {pano_id} DA3 elevation target: {elev:.4f}"
-                        )
-                    else:
-                        print(
-                            f"  [Y-ground] Pano {pano_id} DA3 elevation invalid, will skip."
-                        )
-
             for i, (view, splat) in enumerate(zip(views, trimmed)):
                 da3_elev = da3_elev_per_pano.get(view.pano_id)
                 if da3_elev is None:
                     continue
                 trimmed[i] = align_da3_y_ground(splat, da3_elev)
+
+        # Ground slice pass: align pitch≈-90 views using DA3 elevation regardless of scale_mode.
+        if da3_elev_per_pano:
+            print("--- Step: Ground slice alignment ---")
+            for i, (view, splat) in enumerate(zip(views, trimmed)):
+                if abs(view.pitch + 90) < 5.0:
+                    da3_elev = da3_elev_per_pano.get(view.pano_id)
+                    if da3_elev is not None:
+                        print(f"  Pano {view.pano_id} ground slice (pitch={view.pitch}°)")
+                        trimmed[i] = align_ground_view(splat, da3_elev)
 
         # Step 3: trim FOV edges, apply world pose
         processed_splats = []
@@ -218,12 +231,12 @@ class SplatProcessor:
                         per_pano_merged[pid], own, others, self.voronoi_buffer_m
                     )
 
-                print("--- Step: Inter-pano Seam Correction ---")
-                per_pano_merged = correct_interpano_seams(
-                    per_pano_merged,
-                    pano_centers,
-                    voronoi_buffer_m=self.voronoi_buffer_m,
-                    seam_band_m=self.voronoi_buffer_m * 4,
-                )
+                # print("--- Step: Inter-pano Seam Correction ---")
+                # per_pano_merged = correct_interpano_seams(
+                #     per_pano_merged,
+                #     pano_centers,
+                #     voronoi_buffer_m=self.voronoi_buffer_m,
+                #     seam_band_m=self.voronoi_buffer_m * 4,
+                # )
 
         return merge(list(per_pano_merged.values())), per_pano_merged

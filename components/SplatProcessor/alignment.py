@@ -347,6 +347,32 @@ def align_da3_2dgrid(
     return _apply_per_gauss_scale(gaussians, per_gauss_scale)
 
 
+def align_ground_view(
+    gaussians: Gaussians3D,
+    da3_elev_target: float,
+) -> Gaussians3D:
+    """Scale a downward-looking (pitch=-90) ground slice so its median Z matches DA3 ground elevation.
+
+    For a camera pointing straight down, Z=depth-to-ground (not Y), so we use median Z.
+    """
+    mv = gaussians.mean_vectors[0].detach().cpu().numpy()
+    z_vals = mv[:, 2]
+    valid = np.isfinite(z_vals) & (z_vals > 0)
+    if valid.sum() < 4:
+        print("  [Ground] Too few valid Gaussians, skipping.")
+        return gaussians
+    sharp_z = float(np.median(z_vals[valid]))
+    if sharp_z <= 1e-6:
+        print("  [Ground] Invalid SHARP ground Z, skipping.")
+        return gaussians
+    scale = da3_elev_target / sharp_z
+    print(
+        f"  [Ground] SHARP median Z: {sharp_z:.4f}  DA3 elev: {da3_elev_target:.4f}  "
+        f"scale: {scale:.4f}"
+    )
+    return scale_gaussians(gaussians, scale)
+
+
 def align_da3_y_ground(
     gaussians: Gaussians3D,
     da3_elev_target: float,

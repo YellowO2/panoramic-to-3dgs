@@ -43,11 +43,11 @@ def extract_views(
                                     os.path.join(output_dir, filename), pano_id, depth_equ))
 
     pole_size = slice_w
-    # generate top and bottom views
+    # generate bottom (ground) view only; sky omitted
     # views.append(_extract_slice(equ, 0,  90, 60.0, pole_size, pole_size,
     #                             os.path.join(output_dir, f"{prefix}sharp_0_90.jpg"), pano_id, depth_equ))
-    # views.append(_extract_slice(equ, 0, -90, 60.0, pole_size, pole_size,
-    #                             os.path.join(output_dir, f"{prefix}sharp_0_-90.jpg"), pano_id, depth_equ))
+    views.append(_extract_slice(equ, 0, -90, 60.0, pole_size, pole_size,
+                                os.path.join(output_dir, f"{prefix}sharp_0_-90.jpg"), pano_id, depth_equ))
     return views
 
 
