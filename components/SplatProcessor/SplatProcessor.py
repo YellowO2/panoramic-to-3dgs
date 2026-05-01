@@ -14,6 +14,8 @@ from components.SplatProcessor.alignment import (
     align_near_edge,
     align_da3_per_point,
     align_da3_zslab,
+    align_da3_y_ground,
+    elevation_estimate,
 )
 
 
@@ -36,12 +38,15 @@ class SplatProcessor:
         scale_mode:
             'near_edge'     — match nearest-Z across slices (no DA3 required)
             'da3_per_point' — per-Voronoi-cell DA3 scale
-            'da3_zslab'     — Z-depth band DA3 scale (preserves thin object shape)
+            'da3_zslab'     — Z-depth band DA3 scale (slicing on z axis)
+            'da3_y_ground'  — Y-ground elevation alignment
         """
         # Pre-compute per-view world poses
         view_poses = []
         for view in views:
-            R_local = Rotation.from_euler("yx", [view.yaw, view.pitch], degrees=True).as_matrix()
+            R_local = Rotation.from_euler(
+                "yx", [view.yaw, view.pitch], degrees=True
+            ).as_matrix()
             pano_data = pano_poses.get(view.pano_id) if pano_poses else None
             center = pano_data["center"] if pano_data else None
             pano_rot = pano_data["rotation"] if pano_data else None
@@ -65,7 +70,9 @@ class SplatProcessor:
                 )
                 ref_depth = None
                 if pano_pts is not None and center is not None:
-                    ref_depth = project_world_cloud_to_view(pano_pts, center, R_c2w, view)
+                    ref_depth = project_world_cloud_to_view(
+                        pano_pts, center, R_c2w, view
+                    )
                 elif view.depth is not None:
                     ref_depth = view.depth
 
@@ -74,15 +81,54 @@ class SplatProcessor:
 
                 if scale_mode == "da3_per_point":
                     trimmed[i] = align_da3_per_point(
-                        splat, ref_depth, view.focal_px, view.focal_px,
-                        int(view.width), int(view.height),
+                        splat,
+                        ref_depth,
+                        view.focal_px,
+                        view.focal_px,
+                        int(view.width),
+                        int(view.height),
                     )
                 else:
                     trimmed[i] = align_da3_zslab(
-                        splat, ref_depth, view.focal_px, view.focal_px,
-                        int(view.width), int(view.height),
-                        self.num_z_slabs, self.MAX_DEPTH,
+                        splat,
+                        ref_depth,
+                        view.focal_px,
+                        view.focal_px,
+                        int(view.width),
+                        int(view.height),
+                        self.num_z_slabs,
+                        self.MAX_DEPTH,
                     )
+        elif scale_mode == "da3_y_ground":
+            # Pre-compute DA3 elevation target once per panorama.
+            # For pitch=0 slices, yaw rotation doesn't affect Y, so any R_c2w works —
+            # we use pano_rot.T (equivalent to yaw=0 slice).
+            da3_elev_per_pano: dict[int, float] = {}
+            if isinstance(da3_world_pts, dict) and pano_poses:
+                for pano_id, world_pts in da3_world_pts.items():
+                    pano_data = pano_poses.get(pano_id)
+                    if pano_data is None:
+                        continue
+                    center = pano_data["center"]
+                    pano_rot = pano_data["rotation"]
+                    R_w2c = pano_rot  # R_w2c = (pano_rot.T).T = pano_rot
+                    pts_cam = (R_w2c @ (world_pts - center).T).T
+                    elev = elevation_estimate(pts_cam[:, 1])
+                    if elev is not None and elev > 1e-6:
+                        da3_elev_per_pano[pano_id] = elev
+                        print(
+                            f"  [Y-ground] Pano {pano_id} DA3 elevation target: {elev:.4f}"
+                        )
+                    else:
+                        print(
+                            f"  [Y-ground] Pano {pano_id} DA3 elevation invalid, will skip."
+                        )
+
+            for i, (view, splat) in enumerate(zip(views, trimmed)):
+                da3_elev = da3_elev_per_pano.get(view.pano_id)
+                if da3_elev is None:
+                    continue
+                trimmed[i] = align_da3_y_ground(splat, da3_elev)
 
         # Step 3: trim FOV edges, apply world pose
         processed_splats = []
@@ -96,7 +142,11 @@ class SplatProcessor:
                 c2w[:3, 3] = center
                 splat = apply_transform(
                     splat,
-                    torch.tensor(c2w[:3, :], dtype=torch.float32, device=splat.mean_vectors.device),
+                    torch.tensor(
+                        c2w[:3, :],
+                        dtype=torch.float32,
+                        device=splat.mean_vectors.device,
+                    ),
                 )
             else:
                 splat = rotate_to_pose(splat, yaw=view.yaw, pitch=view.pitch)
@@ -106,5 +156,7 @@ class SplatProcessor:
         per_pano_splats: dict[int, list] = {}
         for pano_id, splat in processed_splats:
             per_pano_splats.setdefault(pano_id, []).append(splat)
-        per_pano_merged = {pid: merge(splats) for pid, splats in per_pano_splats.items()}
+        per_pano_merged = {
+            pid: merge(splats) for pid, splats in per_pano_splats.items()
+        }
         return merge([s for _, s in processed_splats]), per_pano_merged

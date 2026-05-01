@@ -11,6 +11,18 @@ from components.SplatProcessor.utils import (
     scale_gaussians,
 )
 
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
+def elevation_estimate(y_values: np.ndarray) -> float | None:
+    """99th percentile of Y as ground-level estimate (Y-down: high positive Y = ground)."""
+    y = y_values[np.isfinite(y_values)]
+    if len(y) < 4:
+        return None
+    return float(np.percentile(y, 99))
+
 
 def _voronoi_common(gaussians, reference_depth, focal_x_px, focal_y_px, image_width, image_height):
     """Shared Voronoi grid setup for DA3 alignment. Returns context dict or None on failure."""
@@ -190,3 +202,27 @@ def align_da3_zslab(
         per_gauss_scale[in_slab] = scale
 
     return _apply_per_gauss_scale(gaussians, per_gauss_scale)
+
+
+def align_da3_y_ground(
+    gaussians: Gaussians3D,
+    da3_elev_target: float,
+) -> Gaussians3D:
+    """Scale Gaussians uniformly so their ground elevation matches DA3's metric ground elevation.
+
+    Elevation is the 99th percentile of Y (Y-down: large positive Y = ground).
+    da3_elev_target is pre-computed once per panorama before the slice loop.
+    """
+    y_sharp = gaussians.mean_vectors[0, :, 1].detach().cpu().numpy()
+    sharp_elev = elevation_estimate(y_sharp)
+
+    if sharp_elev is None or sharp_elev <= 1e-6:
+        print("  [Y-ground] Invalid SHARP elevation, skipping.")
+        return gaussians
+
+    scale = da3_elev_target / sharp_elev
+    print(
+        f"  [Y-ground] SHARP elev: {sharp_elev:.4f}  DA3 elev: {da3_elev_target:.4f}  "
+        f"scale: {scale:.4f}"
+    )
+    return scale_gaussians(gaussians, scale)
