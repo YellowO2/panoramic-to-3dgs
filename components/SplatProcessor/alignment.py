@@ -2,7 +2,7 @@ import math
 
 import numpy as np
 import torch
-from scipy.ndimage import distance_transform_edt
+from scipy.ndimage import distance_transform_edt, gaussian_filter1d
 
 from sharp.utils.gaussians import Gaussians3D
 from components.SplatProcessor.utils import (
@@ -171,8 +171,14 @@ def align_da3_zslab(
     image_height: int,
     num_slabs: int,
     max_depth: float,
+    smooth_sigma_m: float = 0.5,
 ) -> Gaussians3D:
-    """Gaussians grouped into thin Z-depth bands; each band moves as a rigid unit."""
+    """Gaussians grouped into thin Z-depth bands; each band moves as a rigid unit.
+
+    After computing per-slab median scales, unoccupied slabs are filled by linear
+    interpolation from neighbours, then a Gaussian smooth (sigma=smooth_sigma_m metres)
+    is applied along the slab axis so adjacent bands transition gradually.
+    """
     ctx = _voronoi_common(gaussians, reference_depth, focal_x_px, focal_y_px, image_width, image_height)
     if ctx is None:
         return gaussians
@@ -202,11 +208,22 @@ def align_da3_zslab(
         f"(thickness: {slab_thickness:.3f}m)"
     )
 
+    # Build full scale array: occupied slabs get their median, unoccupied get
+    # linearly interpolated from neighbours (better than a flat global_median fallback).
+    full_scales = np.full(num_slabs, global_median, dtype=np.float32)
+    full_scales[unique_slabs] = slab_medians
+    if len(unique_slabs) > 1:
+        all_idx = np.arange(num_slabs)
+        full_scales = np.interp(all_idx, unique_slabs, slab_medians).astype(np.float32)
+
+    # Gaussian smooth along slab axis so adjacent bands transition gradually.
+    sigma_slabs = smooth_sigma_m / slab_thickness
+    full_scales = gaussian_filter1d(full_scales, sigma=sigma_slabs).astype(np.float32)
+    print(f"  [DA3 zslab] Smooth sigma: {smooth_sigma_m}m ({sigma_slabs:.1f} slabs)")
+
+    # Assign each valid Gaussian the smoothed scale of its slab (vectorised).
     per_gauss_scale = np.full(len(ctx["pixel_x"]), global_median, dtype=np.float32)
-    slab_to_median = dict(zip(unique_slabs.tolist(), slab_medians.tolist()))
-    for s, scale in slab_to_median.items():
-        in_slab = valid_idx[slab_idx == s]
-        per_gauss_scale[in_slab] = scale
+    per_gauss_scale[valid_idx] = full_scales[slab_idx]
 
     return _apply_per_gauss_scale(gaussians, per_gauss_scale)
 

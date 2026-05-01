@@ -22,8 +22,9 @@ from components.SplatProcessor.alignment import (
 class SplatProcessor:
     MAX_DEPTH = 10.0
 
-    def __init__(self, num_z_slabs: int = 500):
+    def __init__(self, num_z_slabs: int = 500, smooth_sigma_m: float = 0.5):
         self.num_z_slabs = num_z_slabs
+        self.smooth_sigma_m = smooth_sigma_m
 
     def process(
         self,
@@ -105,6 +106,7 @@ class SplatProcessor:
                         int(view.height),
                         self.num_z_slabs,
                         self.MAX_DEPTH,
+                        self.smooth_sigma_m,
                     )
         elif scale_mode == "da3_y_ground":
             # Pre-compute DA3 elevation target once per panorama.
