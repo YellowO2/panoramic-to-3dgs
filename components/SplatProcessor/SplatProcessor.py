@@ -8,6 +8,7 @@ from components.SplatProcessor.utils import (
     rotate_to_pose,
     trim_by_fov,
     trim_by_max_depth,
+    trim_by_pano_voronoi,
     merge,
 )
 from components.SplatProcessor.alignment import (
@@ -22,9 +23,10 @@ from components.SplatProcessor.alignment import (
 class SplatProcessor:
     MAX_DEPTH = 10.0
 
-    def __init__(self, num_z_slabs: int = 500, smooth_sigma_m: float = 0.5):
+    def __init__(self, num_z_slabs: int = 500, smooth_sigma_m: float = 0.5, voronoi_buffer_m: float = 1.0):
         self.num_z_slabs = num_z_slabs
         self.smooth_sigma_m = smooth_sigma_m
+        self.voronoi_buffer_m = voronoi_buffer_m
 
     def process(
         self,
@@ -169,4 +171,23 @@ class SplatProcessor:
         per_pano_merged = {
             pid: merge(splats) for pid, splats in per_pano_splats.items()
         }
-        return merge([s for _, s in processed_splats]), per_pano_merged
+
+        # Inter-pano Voronoi trim: keep each Gaussian only if it's closest (XZ) to its own pano.
+        if pano_poses and len(per_pano_merged) > 1:
+            print("--- Step: Inter-pano Voronoi trim ---")
+            pano_centers = {
+                pid: pano_poses[pid]["center"]
+                for pid in per_pano_merged
+                if pano_poses.get(pid) is not None
+            }
+            if len(pano_centers) > 1:
+                for pid in list(per_pano_merged.keys()):
+                    if pid not in pano_centers:
+                        continue
+                    own = pano_centers[pid]
+                    others = [c for p, c in pano_centers.items() if p != pid]
+                    per_pano_merged[pid] = trim_by_pano_voronoi(
+                        per_pano_merged[pid], own, others, self.voronoi_buffer_m
+                    )
+
+        return merge(list(per_pano_merged.values())), per_pano_merged

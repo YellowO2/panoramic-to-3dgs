@@ -285,6 +285,32 @@ def trim_by_fov(gaussians, hfov_limit):
     )
 
 
+def trim_by_pano_voronoi(
+    gaussians: Gaussians3D,
+    own_center: np.ndarray,
+    other_centers: list,
+    buffer_m: float = 1.0,
+) -> Gaussians3D:
+    """Keep Gaussians closer (XZ plane) to their own pano center than any other, plus a buffer."""
+    if not other_centers:
+        return gaussians
+    mv = gaussians.mean_vectors[0].detach().cpu().numpy()
+    xz = mv[:, [0, 2]]
+    dist_own = np.linalg.norm(xz - own_center[[0, 2]], axis=1)
+    other_dists = np.stack(
+        [np.linalg.norm(xz - c[[0, 2]], axis=1) for c in other_centers], axis=1
+    )
+    min_other = other_dists.min(axis=1)
+    mask = torch.tensor(dist_own <= min_other + buffer_m, device=gaussians.mean_vectors.device)
+    return Gaussians3D(
+        mean_vectors=gaussians.mean_vectors[:, mask, :],
+        singular_values=gaussians.singular_values[:, mask, :],
+        quaternions=gaussians.quaternions[:, mask, :],
+        colors=gaussians.colors[:, mask, :],
+        opacities=gaussians.opacities[:, mask],
+    )
+
+
 def merge(splats_list: list[Gaussians3D]) -> Gaussians3D:
     if not splats_list:
         return None
