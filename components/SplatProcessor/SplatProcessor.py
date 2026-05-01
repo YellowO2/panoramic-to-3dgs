@@ -73,7 +73,11 @@ class SplatProcessor:
             for i, (view, splat) in enumerate(zip(views, trimmed)):
                 _, center, _, R_c2w = view_poses[i]
                 if scale_mode == "da3_zslab_global":
-                    pts = all_da3_pts
+                    if all_da3_pts is not None and center is not None:
+                        dist = np.linalg.norm(all_da3_pts - center, axis=1)
+                        pts = all_da3_pts[dist <= self.MAX_DEPTH]
+                    else:
+                        pts = all_da3_pts
                 else:
                     pts = (
                         da3_world_pts.get(view.pano_id)
