@@ -117,18 +117,21 @@ def panoramic_depth_to_pcd(
 
 
 def project_world_cloud_to_view(
-    world_pts: np.ndarray, center: np.ndarray, R_c2w: np.ndarray, view
+    world_pts: np.ndarray, center: np.ndarray, R_c2w: np.ndarray, view, max_depth: float = None
 ) -> np.ndarray:
     """
     Projects a world-space point cloud into a single view's depth buffer.
     R_c2w is the full camera-to-world rotation (pano_rot.T @ R_local).
     Returns a (H, W) depth map in metres; 0 means no data.
     Minimum-Z (closest surface) wins when multiple points land on the same pixel.
+    max_depth: if set, discards points with camera-space Z beyond this value (filters cross-wall leakage).
     """
     R_w2c = R_c2w.T
     pts_cam = (R_w2c @ (world_pts - center).T).T  # (N, 3)
 
     valid = pts_cam[:, 2] > 0.1
+    if max_depth is not None:
+        valid &= pts_cam[:, 2] <= max_depth
     pts_cam = pts_cam[valid]
     if len(pts_cam) == 0:
         return np.zeros((int(view.height), int(view.width)), dtype=np.float32)
