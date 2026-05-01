@@ -142,6 +142,7 @@ class SplatProcessor:
         for i, (view, splat) in enumerate(zip(views, trimmed)):
             _, center, _, R_c2w = view_poses[i]
             splat = trim_by_fov(splat, hfov_limit=view.hfov - 6.0)
+            splat = trim_by_max_depth(splat, self.MAX_DEPTH)
 
             if center is not None:
                 c2w = np.eye(4)
