@@ -36,7 +36,8 @@ class SplatProcessor:
         smooth_sigma_m: float = 0.5,
         smooth_sigma_fov: float = 0.15,
         voronoi_buffer_m: float = 1.5,
-        floor_keep_fraction: float = 0.5,
+        floor_keep_fraction: float = 0.35,
+        min_depth_coverage: float = 0.1,
     ):
         self.num_z_slabs = num_z_slabs
         self.num_fov_slabs = num_fov_slabs
@@ -44,6 +45,35 @@ class SplatProcessor:
         self.smooth_sigma_fov = smooth_sigma_fov
         self.voronoi_buffer_m = voronoi_buffer_m
         self.floor_keep_fraction = floor_keep_fraction
+        self.min_depth_coverage = min_depth_coverage
+
+    def _depth_is_sufficient(self, ref_depth: np.ndarray, view: View) -> bool:
+        n_valid = int((ref_depth > 0).sum())
+        min_required = max(16, int(view.width * view.height * self.min_depth_coverage))
+        print(f"  [Depth coverage] {n_valid} pts (min {min_required})")
+        return n_valid >= min_required
+
+    def _try_yground_fallback(
+        self, splat, view, pano_poses, da3_world_pts
+    ) -> Gaussians3D:
+        pano_data = pano_poses.get(view.pano_id) if pano_poses else None
+        if pano_data is None:
+            return splat
+        pts = (
+            da3_world_pts.get(view.pano_id)
+            if isinstance(da3_world_pts, dict)
+            else da3_world_pts
+        )
+        if pts is None:
+            return splat
+        pts_cam = (pano_data["rotation"] @ (pts - pano_data["center"]).T).T
+        da3_elev = elevation_estimate(pts_cam[:, 1], pts_cam[:, 2])
+        if da3_elev is not None and da3_elev > 1e-6:
+            print(
+                f"  [Fallback] yaw={view.yaw:.0f}° sparse depth → y_ground (elev={da3_elev:.3f})"
+            )
+            return align_da3_y_ground(splat, da3_elev)
+        return splat
 
     def _resolve_ref_depth(
         self,
@@ -163,13 +193,18 @@ class SplatProcessor:
             "da3_2dgrid_global",
         ):
             for i, (view, splat) in enumerate(zip(views, trimmed)):
+                if view.pitch == -90:
+                    continue  # handled by floor alignment step below
                 _, center, _, R_c2w = view_poses[i]
                 ref_depth = self._resolve_ref_depth(
                     view, center, R_c2w, scale_mode, da3_world_pts, all_da3_pts
                 )
-                if ref_depth is None:
-                    continue
-                trimmed[i] = self._align_splat(splat, ref_depth, view, scale_mode)
+                if ref_depth is not None and self._depth_is_sufficient(ref_depth, view):
+                    trimmed[i] = self._align_splat(splat, ref_depth, view, scale_mode)
+                else:
+                    trimmed[i] = self._try_yground_fallback(
+                        splat, view, pano_poses, da3_world_pts
+                    )
 
         elif scale_mode == "da3_y_ground":
             for i, (view, splat) in enumerate(zip(views, trimmed)):
