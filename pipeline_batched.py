@@ -65,9 +65,31 @@ def _run_da3_batch(
 ) -> None:
     """
     Run DA3 on one batch of panos, align poses to the global world frame via the
-    shared bridge pano (batch_pano_ids[0] if it already has a world pose), and
-    accumulate world-frame camera poses and depth point clouds.
+    shared bridge pano, and accumulate world-frame camera poses and depth point clouds.
+    Results are cached to disk so subsequent runs skip the model entirely.
     """
+    batch_idxs = [pano_idx_of[pid] for pid in batch_pano_ids]
+    cache_path = os.path.join(output_dir, f"da3_cache_{'_'.join(str(i) for i in batch_idxs)}.npz")
+
+    # ── Cache hit: load poses and pts, skip model entirely ───────────────────
+    if os.path.exists(cache_path):
+        print(f"  [DA3 cache] Loading {cache_path}")
+        data = np.load(cache_path)
+        for key in data.files:
+            if key.startswith('pose_center_'):
+                idx = int(key[len('pose_center_'):])
+                if idx not in world_poses:
+                    world_poses[idx] = {
+                        'center':   data[f'pose_center_{idx}'],
+                        'rotation': data[f'pose_rotation_{idx}'],
+                    }
+            elif key.startswith('pts_'):
+                idx = int(key[len('pts_'):])
+                if idx not in group_da3_pts:
+                    group_da3_pts[idx] = data[key]
+        return
+
+    # ── Cache miss: extract views, run DA3, save cache ────────────────────────
     # 1. Extract DA3 views
     all_views: list[View] = []
     for pid in batch_pano_ids:
@@ -84,8 +106,16 @@ def _run_da3_batch(
     local_poses = da3_result.pano_poses  # {pano_idx: {center, rotation}} in DA3 local frame
 
     # 3. Determine rigid transform from DA3 local frame → world frame
-    bridge_idx = pano_idx_of[batch_pano_ids[0]]
-    has_bridge = bridge_idx in world_poses and bridge_idx in local_poses
+    # Scan batch panos in order — first one present in both world_poses and local_poses
+    # becomes the bridge (handles cases where the designated overlap pano was filtered).
+    bridge_idx = None
+    for pid in batch_pano_ids:
+        idx = pano_idx_of[pid]
+        if idx in world_poses and idx in local_poses:
+            bridge_idx = idx
+            break
+    has_bridge = bridge_idx is not None
+    print(f"  [Bridge] chosen={bridge_idx} | has_bridge={has_bridge} | local_poses keys={list(local_poses.keys())}")
 
     if has_bridge:
         R_l2w, t_l2w = compute_local_to_world(
@@ -93,19 +123,26 @@ def _run_da3_batch(
             world_poses[bridge_idx]['rotation'], world_poses[bridge_idx]['center'],
         )
     else:
-        # First batch ever: DA3 local frame becomes the world frame
         R_l2w, t_l2w = np.eye(3), np.zeros(3)
 
-    # 4. Register new panos (skip already-registered ones)
+    # 4. Register new panos and collect for cache
+    cache_data = {}
     for idx, local_pose in local_poses.items():
         if idx not in world_poses:
             world_poses[idx] = apply_to_pose(local_pose, R_l2w, t_l2w)
+            cache_data[f'pose_center_{idx}']   = world_poses[idx]['center']
+            cache_data[f'pose_rotation_{idx}'] = world_poses[idx]['rotation']
 
-    # 5. Backproject depth → world-frame point cloud (skip already-computed panos)
+    # 5. Backproject depth → world-frame point cloud
     _, _, local_pts = backproject_views_to_pcd(filtered_views, da3_result)
     for idx, pts in local_pts.items():
         if idx not in group_da3_pts:
             group_da3_pts[idx] = apply_to_pts(pts, R_l2w, t_l2w)
+            cache_data[f'pts_{idx}'] = group_da3_pts[idx]
+
+    if cache_data:
+        np.savez(cache_path, **cache_data)
+        print(f"  [DA3 cache] Saved {cache_path}")
 
 
 # ── Main pipeline ─────────────────────────────────────────────────────────────
@@ -115,7 +152,7 @@ def run_batched_pipeline(
     folder_path: str,
     output_dir: str,
     model_paths: dict,
-    batch_size: int = 4,
+    batch_size: int = 3,
     batches_per_group: int = 3,
     depth_mode: str = 'da3',
     sharp_subbatch_size: int = 4,

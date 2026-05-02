@@ -34,11 +34,11 @@ def nearest_neighbor_order(nodes: list[dict]) -> list[str]:
     return [ids[i] for i in order]
 
 
-def make_batches(ordered_ids: list[str], batch_size: int = 4) -> list[list[str]]:
-    """Sliding-window batches with stride = batch_size - 1 (1 shared pano between consecutive batches)."""
+def make_batches(ordered_ids: list[str], batch_size: int = 4, overlap: int = 1) -> list[list[str]]:
+    """Sliding-window batches with `overlap` shared panos between consecutive batches."""
     if len(ordered_ids) <= batch_size:
         return [list(ordered_ids)]
-    stride = batch_size - 1
+    stride = batch_size - overlap
     batches = []
     i = 0
     while i < len(ordered_ids):
