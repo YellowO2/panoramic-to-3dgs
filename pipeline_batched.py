@@ -11,7 +11,7 @@ from components.DepthMapGenerator.DA3Model import DA3Model
 from components.SpatialGrouper import make_batches, nearest_neighbor_order
 from components.SplatGenerator.SplatGenerator import SplatGenerator
 from components.SplatProcessor.SplatProcessor import SplatProcessor
-from components.SplatProcessor.utils import backproject_views_to_pcd
+from components.SplatProcessor.utils import backproject_views_to_pcd, merge as merge_gaussians
 from components.ViewExtractor.ViewExtractor import extract_views, extract_views_for_da3
 from datatype import View
 
@@ -194,8 +194,9 @@ def run_batched_pipeline(
         new_pano_ids = [pid for pid in all_group_ids if pid not in sharp_done]
         print(f"  SHARP: {len(new_pano_ids)} new panos")
 
-        all_sharp_views: list[View] = []
-        all_gaussians: list[Gaussians3D] = []
+        # Index by pano_idx so phase 3 can retrieve per-batch subsets
+        pano_to_views:     dict[int, list[View]]       = {}
+        pano_to_gaussians: dict[int, list[Gaussians3D]] = {}
 
         sharp_gen = SplatGenerator(model_paths['sharp'])
         for sub_start in range(0, len(new_pano_ids), sharp_subbatch_size):
@@ -210,11 +211,13 @@ def run_batched_pipeline(
                     overlap_degrees=10, slice_count=5,
                     prefix=f"pano_{idx}_", pano_id=idx,
                 )
+                pano_to_views[idx] = []
+                pano_to_gaussians[idx] = []
                 for v in views:
                     g = sharp_gen.generate_from_view(v)
                     _move_to_cpu(g)
-                    all_sharp_views.append(v)
-                    all_gaussians.append(g)
+                    pano_to_views[idx].append(v)
+                    pano_to_gaussians[idx].append(g)
             torch.cuda.empty_cache()
 
         del sharp_gen
@@ -222,28 +225,63 @@ def run_batched_pipeline(
         gc.collect()
         sharp_done.update(new_pano_ids)
 
-        # ── Phase 3: Process + save ───────────────────────────────────
-        print(f"  Processing {len(all_sharp_views)} SHARP views")
-
-        group_pano_poses = None
-        if depth_mode == 'da3':
-            group_pano_poses = {
-                pano_idx_of[pid]: world_poses[pano_idx_of[pid]]
-                for pid in new_pano_ids
-                if pano_idx_of[pid] in world_poses
-            }
-
+        # ── Phase 3: Process per DA3 batch, then merge + save ────────
+        # Each batch processes ~4 panos, limiting peak GPU to ~24 views.
+        # Voronoi trim is per-batch only (slight overlap at batch boundaries).
         processor = SplatProcessor()
-        merged_splat, _ = processor.process(
-            views=all_sharp_views,
-            splats_list=all_gaussians,
-            pano_poses=group_pano_poses,
-            da3_world_pts=group_da3_pts if depth_mode == 'da3' else None,
-            scale_mode=scale_mode,
-        )
+        partial_splats: list[Gaussians3D] = []
+        sharp_processed: set[int] = set()
+        first_views: list[View] = []
+
+        for batch_ids in group_batches:
+            # Only include panos that are new to this group AND not yet processed
+            batch_idxs = [
+                pano_idx_of[pid] for pid in batch_ids
+                if pano_idx_of[pid] in pano_to_views and pano_idx_of[pid] not in sharp_processed
+            ]
+            if not batch_idxs:
+                continue
+
+            batch_views:     list[View]       = []
+            batch_gaussians: list[Gaussians3D] = []
+            for idx in batch_idxs:
+                batch_views.extend(pano_to_views[idx])
+                batch_gaussians.extend(pano_to_gaussians[idx])
+
+            if not first_views:
+                first_views = batch_views[:1]
+
+            batch_pano_poses = (
+                {idx: world_poses[idx] for idx in batch_idxs if idx in world_poses}
+                if depth_mode == 'da3' else None
+            )
+            batch_da3_pts = (
+                {idx: group_da3_pts[idx] for idx in batch_idxs if idx in group_da3_pts}
+                if depth_mode == 'da3' else None
+            )
+
+            print(f"  Processing DA3 batch: pano indices {batch_idxs}")
+            partial, _ = processor.process(
+                views=batch_views,
+                splats_list=batch_gaussians,
+                pano_poses=batch_pano_poses,
+                da3_world_pts=batch_da3_pts,
+                scale_mode=scale_mode,
+            )
+            partial_splats.append(partial)
+            sharp_processed.update(batch_idxs)
+
+            # Free this batch's per-pano data immediately
+            for idx in batch_idxs:
+                del pano_to_views[idx]
+                del pano_to_gaussians[idx]
+            torch.cuda.empty_cache()
+            gc.collect()
+
+        merged_splat = merge_gaussians(partial_splats)
 
         group_ply = os.path.join(output_dir, f"group_{group_idx}.ply")
-        ref = all_sharp_views[0]
+        ref = first_views[0]
         save_ply(merged_splat, f_px=ref.focal_px, image_shape=(ref.height, ref.width), path=group_ply)
         print(f"  Saved: {group_ply}")
 
@@ -267,7 +305,7 @@ def run_batched_pipeline(
             json.dump(group_meta, f, indent=2)
 
         # Clear this group's data before starting the next
-        del all_sharp_views, all_gaussians, merged_splat, group_da3_pts
+        del pano_to_views, pano_to_gaussians, partial_splats, merged_splat, group_da3_pts
         torch.cuda.empty_cache()
         gc.collect()
 

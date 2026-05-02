@@ -307,6 +307,14 @@ class SplatProcessor:
             else:
                 splat = rotate_to_pose(splat, yaw=view.yaw, pitch=view.pitch)
 
+            # Move to CPU immediately to avoid accumulating GPU tensors across views
+            splat = Gaussians3D(
+                mean_vectors=splat.mean_vectors.cpu(),
+                singular_values=splat.singular_values.cpu(),
+                quaternions=splat.quaternions.cpu(),
+                colors=splat.colors.cpu(),
+                opacities=splat.opacities.cpu(),
+            )
             processed_splats.append((view.pano_id, splat))
 
         per_pano_splats: dict[int, list] = {}
