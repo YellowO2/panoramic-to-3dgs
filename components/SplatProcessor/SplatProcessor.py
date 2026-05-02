@@ -11,6 +11,7 @@ from components.SplatProcessor.utils import (
     trim_by_pitch_bottom,
     trim_by_max_depth,
     trim_beyond_depth,
+    trim_depth_range,
     trim_by_pano_voronoi,
     correct_interpano_seams,
     subsample_gaussians,
@@ -37,14 +38,16 @@ class SplatProcessor:
         voronoi_buffer_m: float = 1.5,
         floor_keep_fraction: float = 0.6,
         min_depth_coverage: float = 1,
+        align_depth: float = 15.0,
         near_depth: float = 20.0,
-        sky_depth: float = 100.0,
+        sky_depth: float = 50.0,
     ):
         """
-        Depth zones:
-          ≤ near_depth        : kept + used for DA3 scale alignment
-          near_depth→sky_depth: trimmed (dead zone — removes mid-range dirt Gaussians)
-          > sky_depth         : kept as sky, not aligned
+        Four depth zones:
+          ≤ align_depth              : kept + used for DA3 scale alignment
+          align_depth → near_depth   : kept, NOT used for alignment
+          near_depth  → sky_depth    : dead zone — trimmed (removes dirt Gaussians)
+          > sky_depth                : sky — kept, not aligned
         """
         self.num_z_slabs = num_z_slabs
         self.num_fov_slabs = num_fov_slabs
@@ -53,6 +56,7 @@ class SplatProcessor:
         self.voronoi_buffer_m = voronoi_buffer_m
         self.floor_keep_fraction = floor_keep_fraction
         self.min_depth_coverage = min_depth_coverage
+        self.align_depth = align_depth
         self.near_depth = near_depth
         self.sky_depth = sky_depth
 
@@ -106,7 +110,7 @@ class SplatProcessor:
 
         if pts is not None and center is not None:
             return project_world_cloud_to_view(
-                pts, center, R_c2w, view, max_depth=self.near_depth * 1.5
+                pts, center, R_c2w, view, max_depth=self.align_depth * 1.5
             )
         if view.depth is not None:
             return view.depth
@@ -132,7 +136,7 @@ class SplatProcessor:
                     w,
                     h,
                     self.num_z_slabs,
-                    self.near_depth,
+                    self.align_depth,
                     self.smooth_sigma_m,
                 )
             case _:  # da3_2dgrid, da3_2dgrid_global
@@ -181,10 +185,16 @@ class SplatProcessor:
             R_c2w = pano_rot.T @ R_local if pano_rot is not None else R_local
             view_poses.append((R_local, center, pano_rot, R_c2w))
 
-        # Step 1: split into near (for alignment) and sky (kept aside, skips alignment).
-        #   Dead zone (near_depth → sky_depth) is dropped from both — that's where dirt lives.
-        trimmed   = [trim_by_max_depth(s, self.near_depth) for s in splats_list]
-        sky_splats = [trim_beyond_depth(s, self.sky_depth)  for s in splats_list]
+        # Step 1: split into four depth zones.
+        #   align_splats : ≤ align_depth            — used for DA3 scale alignment
+        #   keep_splats  : align_depth → near_depth — kept but skips alignment
+        #   dead zone    : near_depth  → sky_depth  — dropped (dirt Gaussians)
+        #   sky_splats   : > sky_depth              — kept, skips alignment
+        trimmed = [trim_by_max_depth(s, self.align_depth) for s in splats_list]
+        keep_splats = [
+            trim_depth_range(s, self.align_depth, self.near_depth) for s in splats_list
+        ]
+        sky_splats = [trim_beyond_depth(s, self.sky_depth) for s in splats_list]
 
         # Pre-compute global DA3 cloud (used by floor alignment regardless of scale_mode)
         all_da3_pts = None
@@ -252,12 +262,15 @@ class SplatProcessor:
                     all_da3_pts,
                     center,
                     R_c2w,
-                    max_depth=self.near_depth,
+                    max_depth=self.align_depth,
                     smooth_sigma_frac=self.smooth_sigma_fov,
                 )
 
-        # Re-attach sky — both near (aligned) and sky go through world-pose transform in step 3
-        trimmed = [merge([near, sky]) for near, sky in zip(trimmed, sky_splats)]
+        # Re-attach keep and sky — all three go through world-pose transform in step 3
+        trimmed = [
+            merge([aligned, keep, sky])
+            for aligned, keep, sky in zip(trimmed, keep_splats, sky_splats)
+        ]
 
         # Step 3: trim FOV edges, apply world pose
         processed_splats = []
