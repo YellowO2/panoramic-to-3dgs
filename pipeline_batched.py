@@ -284,8 +284,8 @@ if __name__ == '__main__':
     run_batched_pipeline(
         # metadata_path='data/inputs/panoramas_1777658753296/metadata.json',
         # folder_path='data/inputs/panoramas_1777658753296',
-             metadata_path='data/inputs/panoramas_example_medium/metadata.json',
-        folder_path='data/inputs/panoramas_example_medium',
+             metadata_path='data/inputs/panoramas_large/metadata.json',
+        folder_path='data/inputs/panoramas_large',
         output_dir='data/outputs/batched_test',
         model_paths=models,
     )

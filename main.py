@@ -76,8 +76,8 @@ def run_panoramic_pipeline(
             extract_views(
                 current_image,
                 sharp_dir,
-                overlap_degrees=10,
-                slice_count=5,
+                overlap_degrees=20,
+                slice_count=6,
                 prefix=f"pano_{i}_",
                 panorama_depth=pano_depth,
                 pano_id=i,

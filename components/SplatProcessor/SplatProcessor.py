@@ -27,7 +27,7 @@ from components.SplatProcessor.alignment import (
 
 
 class SplatProcessor:
-    MAX_DEPTH = 10.0
+    MAX_DEPTH = 200.0
 
     def __init__(
         self,
@@ -260,7 +260,7 @@ class SplatProcessor:
                     splat = trim_by_pitch_bottom(
                         splat, max_down_deg=view.vfov / 2.0 - 1.0
                     )
-            splat = trim_by_max_depth(splat, self.MAX_DEPTH)
+            # splat = trim_by_max_depth(splat, self.MAX_DEPTH)
 
             if center is not None:
                 c2w = np.eye(4)
