@@ -78,7 +78,7 @@ def extract_views(
             equ,
             0,
             -90,
-            90.0,
+            95.0,
             pole_size,
             pole_size,
             os.path.join(output_dir, f"{prefix}sharp_0_-90.jpg"),

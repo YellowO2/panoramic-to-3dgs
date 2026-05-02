@@ -174,23 +174,23 @@ if __name__ == "__main__":
 
     # --- Option A: folder input ---
     panos, depths, meta = load_panorama_folder("data/inputs/panoramas_example")
-    run_panoramic_pipeline(
-        panorama_paths=panos,
-        output_dir="data/outputs/folder_test",
-        depth_mode="da3",
-        model_paths=models,
-    )
-
-    # --- Option B: manual list (legacy) ---
-    # panos = [
-    #     "data/inputs/round1.jpg",
-    #     "data/inputs/round2.jpg",
-    #     "data/inputs/round3_2.jpg",
-    #     "data/inputs/round_4.jpg",
-    # ]
     # run_panoramic_pipeline(
     #     panorama_paths=panos,
-    #     output_dir="data/outputs/multi_pano_test",
+    #     output_dir="data/outputs/folder_test",
     #     depth_mode="da3",
     #     model_paths=models,
     # )
+
+    # --- Option B: manual list (legacy) ---
+    panos = [
+        "data/inputs/round1.jpg",
+        "data/inputs/round2.jpg",
+        "data/inputs/round3_2.jpg",
+        "data/inputs/round_4.jpg",
+    ]
+    run_panoramic_pipeline(
+        panorama_paths=panos,
+        output_dir="data/outputs/multi_pano_test",
+        depth_mode="da3",
+        model_paths=models,
+    )
