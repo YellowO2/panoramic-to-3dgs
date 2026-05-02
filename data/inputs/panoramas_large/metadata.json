@@ -1,0 +1,108 @@
+{
+  "spatial_order": [
+    "dSpqjz8y3ecGz7TTFtpVjw",
+    "juO5AxESFbs9zoKp7rpmAQ",
+    "5seXkg_yNeYUi7qTc8iXOw",
+    "1trVWXt50EOupFU14Wbf4w",
+    "k1HF3EitixoiPJrUY_x0qw",
+    "V8v5qEoMnkU4WSBpMKn_1w",
+    "2yh5foqH0vK6-moqofQhFw",
+    "G0mJpjKNRNhy7qZWcBTldQ",
+    "IojM04FqhlW4ZEMfP_WmlQ",
+    "qDEEUlP7YASuSlqS0mv6HA",
+    "AfqSBNDxXndyysSRUylsmg",
+    "RjEW59qhVYHdftbZ3Ntumw"
+  ],
+  "nodes": [
+    {
+      "id": "dSpqjz8y3ecGz7TTFtpVjw",
+      "lat": 1.34666387006155,
+      "lon": 103.683712220366,
+      "date": "2024-07",
+      "heading": 0.5978210751788072,
+      "pitch": 0.03873354752633046,
+      "has_depth": false
+    },
+    {
+      "id": "juO5AxESFbs9zoKp7rpmAQ",
+      "lat": 1.346743803845042,
+      "lon": 103.6837608151243,
+      "date": "2024-07",
+      "heading": 0.501396034879822,
+      "pitch": 0.03823633535081266,
+      "has_depth": false
+    },
+    {
+      "id": "5seXkg_yNeYUi7qTc8iXOw",
+      "lat": 1.346571250992046,
+      "lon": 103.6836797060649,
+      "date": "2024-07",
+      "heading": 3.783603028104066,
+      "pitch": -0.01809910908428751,
+      "has_depth": false
+    },
+    {
+      "id": "V8v5qEoMnkU4WSBpMKn_1w",
+      "lat": 1.34634008064262,
+      "lon": 103.6834637688978,
+      "date": "2024-07",
+      "heading": 0.6643468392089866,
+      "pitch": 0.018807509934248588,
+      "has_depth": false
+    },
+    {
+      "id": "2yh5foqH0vK6-moqofQhFw",
+      "lat": 1.346268699666431,
+      "lon": 103.6834086360603,
+      "date": "2024-07",
+      "heading": 0.6539111758984839,
+      "pitch": 0.027745078552554512,
+      "has_depth": false
+    },
+    {
+      "id": "G0mJpjKNRNhy7qZWcBTldQ",
+      "lat": 1.346284038580468,
+      "lon": 103.683353945015,
+      "date": "2022-05",
+      "heading": 2.2964344869115116,
+      "pitch": 0.03315768715203155,
+      "has_depth": false
+    },
+    {
+      "id": "IojM04FqhlW4ZEMfP_WmlQ",
+      "lat": 1.34619717213768,
+      "lon": 103.6833541217227,
+      "date": "2024-07",
+      "heading": 0.6141702211108035,
+      "pitch": 0.011720172483275216,
+      "has_depth": false
+    },
+    {
+      "id": "qDEEUlP7YASuSlqS0mv6HA",
+      "lat": 1.346124770403903,
+      "lon": 103.6833023463757,
+      "date": "2024-07",
+      "heading": 0.6271878856771657,
+      "pitch": -0.025849307330581606,
+      "has_depth": false
+    },
+    {
+      "id": "AfqSBNDxXndyysSRUylsmg",
+      "lat": 1.346054674114769,
+      "lon": 103.6832478320817,
+      "date": "2024-07",
+      "heading": 0.7178900258201659,
+      "pitch": -0.02518085389697172,
+      "has_depth": false
+    },
+    {
+      "id": "RjEW59qhVYHdftbZ3Ntumw",
+      "lat": 1.346015541908691,
+      "lon": 103.6833466999994,
+      "date": "2022-05",
+      "heading": 2.828866701529495,
+      "pitch": -0.05033907092467776,
+      "has_depth": false
+    }
+  ]
+}
