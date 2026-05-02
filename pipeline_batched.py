@@ -282,8 +282,10 @@ if __name__ == '__main__':
         'sharp': 'models/sharp_2572gikvuh.pt',
     }
     run_batched_pipeline(
-        metadata_path='data/inputs/panoramas_1777658753296/metadata.json',
-        folder_path='data/inputs/panoramas_1777658753296',
+        # metadata_path='data/inputs/panoramas_1777658753296/metadata.json',
+        # folder_path='data/inputs/panoramas_1777658753296',
+             metadata_path='data/inputs/panoramas_example_medium/metadata.json',
+        folder_path='data/inputs/panoramas_example_medium',
         output_dir='data/outputs/batched_test',
         model_paths=models,
     )

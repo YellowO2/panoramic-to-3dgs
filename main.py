@@ -183,10 +183,10 @@ if __name__ == "__main__":
 
     # --- Option B: manual list (legacy) ---
     panos = [
-        "data/inputs/round1.jpg",
-        "data/inputs/round2.jpg",
-        "data/inputs/round3_2.jpg",
-        "data/inputs/round_4.jpg",
+        # "data/inputs/round1.jpg",
+        # "data/inputs/round2.jpg",
+        # "data/inputs/round3_2.jpg",
+        # "data/inputs/round_4.jpg",
     ]
     run_panoramic_pipeline(
         panorama_paths=panos,
