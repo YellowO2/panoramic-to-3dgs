@@ -8,6 +8,7 @@ from sharp.utils.gaussians import Gaussians3D
 from components.SplatProcessor.utils import (
     measure_nearest_z,
     project_gaussians_to_2d,
+    project_world_cloud_to_view,
     scale_gaussians,
 )
 
@@ -369,3 +370,118 @@ def align_da3_y_ground(
         f"scale: {scale:.4f}"
     )
     return scale_gaussians(gaussians, scale)
+
+
+def _plane_fill_depth(sparse_depth: np.ndarray) -> np.ndarray | None:
+    """Fit plane d = a*px + b*py + c to valid pixels, fill all empty pixels with prediction."""
+    h, w = sparse_depth.shape
+    valid = sparse_depth > 0
+    if valid.sum() < 4:
+        return None
+    ys, xs = np.where(valid)
+    ds = sparse_depth[valid].astype(np.float32)
+    A = np.stack([xs.astype(np.float32), ys.astype(np.float32), np.ones(len(xs), dtype=np.float32)], axis=1)
+    coeffs, _, _, _ = np.linalg.lstsq(A, ds, rcond=None)
+    grid_x, grid_y = np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
+    predicted = coeffs[0] * grid_x + coeffs[1] * grid_y + coeffs[2]
+    result = np.maximum(predicted, 1e-3)
+    result[valid] = sparse_depth[valid]
+    return result.astype(np.float32)
+
+
+def _align_floor_spatial_grid(
+    gaussians: Gaussians3D,
+    filled_depth: np.ndarray,
+    focal_x_px: float,
+    focal_y_px: float,
+    image_width: int,
+    image_height: int,
+    grid_size: int,
+    smooth_sigma_frac: float,
+) -> Gaussians3D:
+    """Scale Gaussians using a spatial px×py grid matched to plane-filled floor depth."""
+    pixel_x, pixel_y, depth_z, _, valid = project_gaussians_to_2d(
+        gaussians, focal_x_px, focal_y_px, image_width, image_height
+    )
+    n_valid = int(valid.sum())
+    print(f"  [Floor] Valid Gaussians: {n_valid} / {len(pixel_x)}")
+    if n_valid < 16:
+        return gaussians
+
+    valid_idx = np.where(valid)[0]
+    valid_px = pixel_x[valid_idx]
+    valid_py = pixel_y[valid_idx]
+    valid_dz = np.clip(depth_z[valid_idx], 1e-6, None)
+
+    px_int = np.clip(np.round(valid_px).astype(np.int32), 0, image_width - 1)
+    py_int = np.clip(np.round(valid_py).astype(np.int32), 0, image_height - 1)
+    ref_at_gauss = filled_depth[py_int, px_int]
+
+    raw_scales = ref_at_gauss / valid_dz
+    global_median = float(np.median(raw_scales))
+    print(f"  [Floor] Global median scale: {global_median:.4f}")
+    if global_median <= 0:
+        return gaussians
+
+    x_bins = np.clip((valid_px / image_width * grid_size).astype(np.int32), 0, grid_size - 1)
+    y_bins = np.clip((valid_py / image_height * grid_size).astype(np.int32), 0, grid_size - 1)
+
+    grid = np.full((grid_size, grid_size), np.nan, dtype=np.float32)
+    flat_idx = y_bins * grid_size + x_bins
+    sort_order = np.argsort(flat_idx)
+    sorted_flat = flat_idx[sort_order]
+    sorted_scales = raw_scales[sort_order]
+    boundaries = np.flatnonzero(np.diff(sorted_flat)) + 1
+    groups = np.split(sorted_scales, boundaries)
+    unique_flat = sorted_flat[np.concatenate([[0], boundaries])]
+    cell_medians = np.array([np.median(g) for g in groups], dtype=np.float32)
+    grid[unique_flat // grid_size, unique_flat % grid_size] = cell_medians
+    print(f"  [Floor] Occupied cells: {len(unique_flat)} / {grid_size ** 2}")
+
+    empty = np.isnan(grid)
+    if empty.any() and (~empty).any():
+        _, nearest = distance_transform_edt(empty, return_indices=True)
+        grid[empty] = grid[nearest[0][empty], nearest[1][empty]]
+    elif empty.all():
+        grid[:] = global_median
+
+    sigma_px = smooth_sigma_frac * grid_size
+    grid = gaussian_filter(grid, sigma=sigma_px).astype(np.float32)
+    print(f"  [Floor] Smooth sigma: {sigma_px:.1f} grid px")
+
+    all_x_bins = np.clip((pixel_x[valid_idx] / image_width * grid_size).astype(np.int32), 0, grid_size - 1)
+    all_y_bins = np.clip((pixel_y[valid_idx] / image_height * grid_size).astype(np.int32), 0, grid_size - 1)
+    per_gauss_scale = np.full(len(pixel_x), global_median, dtype=np.float32)
+    per_gauss_scale[valid_idx] = grid[all_y_bins, all_x_bins]
+
+    return _apply_per_gauss_scale(gaussians, per_gauss_scale)
+
+
+def align_floor_view(
+    gaussians: Gaussians3D,
+    view,
+    all_da3_pts: np.ndarray,
+    center: np.ndarray,
+    R_c2w: np.ndarray,
+    max_depth: float = 10.0,
+    grid_size: int = 200,
+    smooth_sigma_frac: float = 0.15,
+) -> Gaussians3D:
+    """Floor (-90°) alignment: project global DA3 cloud, plane-fill sparse depth, spatial px×py grid scale."""
+    sparse_depth = project_world_cloud_to_view(
+        all_da3_pts, center, R_c2w, view, max_depth=max_depth * 1.5
+    )
+    n_pts = int((sparse_depth > 0).sum())
+    print(f"  [Floor] DA3 pts projected: {n_pts}")
+
+    filled_depth = _plane_fill_depth(sparse_depth)
+    if filled_depth is None:
+        print("  [Floor] Too few DA3 points, skipping floor alignment.")
+        return gaussians
+
+    return _align_floor_spatial_grid(
+        gaussians, filled_depth,
+        view.focal_px, view.focal_px,
+        int(view.width), int(view.height),
+        grid_size, smooth_sigma_frac,
+    )

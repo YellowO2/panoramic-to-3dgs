@@ -18,6 +18,7 @@ from components.SplatProcessor.alignment import (
     align_da3_zslab,
     align_da3_2dgrid,
     align_da3_y_ground,
+    align_floor_view,
     elevation_estimate,
 )
 
@@ -121,6 +122,14 @@ class SplatProcessor:
         # Step 1: trim far points (camera space)
         trimmed = [trim_by_max_depth(splat, self.MAX_DEPTH) for splat in splats_list]
 
+        # Pre-compute global DA3 cloud (used by floor alignment regardless of scale_mode)
+        all_da3_pts = None
+        if isinstance(da3_world_pts, dict):
+            parts = [pts for pts in da3_world_pts.values() if pts is not None]
+            all_da3_pts = np.concatenate(parts, axis=0) if parts else None
+        elif da3_world_pts is not None:
+            all_da3_pts = da3_world_pts
+
         # Step 2: scale alignment
         print(f"--- Scale mode: {scale_mode} ---")
         if scale_mode == "near_edge":
@@ -129,11 +138,6 @@ class SplatProcessor:
         elif scale_mode in (
             "da3_per_point", "da3_zslab", "da3_zslab_global", "da3_2dgrid", "da3_2dgrid_global"
         ):
-            all_da3_pts = None
-            if scale_mode in ("da3_zslab_global", "da3_2dgrid_global") and isinstance(da3_world_pts, dict):
-                parts = [pts for pts in da3_world_pts.values() if pts is not None]
-                all_da3_pts = np.concatenate(parts, axis=0) if parts else None
-
             for i, (view, splat) in enumerate(zip(views, trimmed)):
                 _, center, _, R_c2w = view_poses[i]
                 ref_depth = self._resolve_ref_depth(
@@ -155,6 +159,21 @@ class SplatProcessor:
                 da3_elev = elevation_estimate(pts_cam[:, 1], pts_cam[:, 2])
                 if da3_elev is not None and da3_elev > 1e-6:
                     trimmed[i] = align_da3_y_ground(splat, da3_elev)
+
+        # Step 2b: floor alignment (-90° pitch), always applied when global DA3 pts are available
+        if all_da3_pts is not None:
+            for i, (view, splat) in enumerate(zip(views, trimmed)):
+                if view.pitch != -90:
+                    continue
+                _, center, _, R_c2w = view_poses[i]
+                if center is None:
+                    continue
+                print(f"--- Floor alignment: pano {view.pano_id} ---")
+                trimmed[i] = align_floor_view(
+                    splat, view, all_da3_pts, center, R_c2w,
+                    max_depth=self.MAX_DEPTH,
+                    smooth_sigma_frac=self.smooth_sigma_fov,
+                )
 
         # Step 3: trim FOV edges, apply world pose
         processed_splats = []
