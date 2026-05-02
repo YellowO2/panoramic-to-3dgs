@@ -1,0 +1,36 @@
+{
+  "spatial_order": [
+    "7PTbHD7jtvuPe0t30sJuUQ",
+    "d8xDJ1fGRtfQqyK3vxkzUA",
+    "RYEn_Run9lAix76Tvj1vag"
+  ],
+  "nodes": [
+    {
+      "id": "7PTbHD7jtvuPe0t30sJuUQ",
+      "lat": 38.37572912478183,
+      "lon": 141.069255267474,
+      "date": "2026-01",
+      "heading": 5.731261682859423,
+      "pitch": 0.0018719359302166966,
+      "has_depth": false
+    },
+    {
+      "id": "d8xDJ1fGRtfQqyK3vxkzUA",
+      "lat": 38.37562105195896,
+      "lon": 141.0693207827221,
+      "date": "2026-01",
+      "heading": 5.870593477402406,
+      "pitch": -0.061011023202897786,
+      "has_depth": false
+    },
+    {
+      "id": "RYEn_Run9lAix76Tvj1vag",
+      "lat": 38.37582832275476,
+      "lon": 141.0692965011758,
+      "date": "2026-01",
+      "heading": 3.9754241298358584,
+      "pitch": 0.050453586851551165,
+      "has_depth": false
+    }
+  ]
+}
