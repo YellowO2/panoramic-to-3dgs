@@ -152,7 +152,7 @@ def run_batched_pipeline(
     folder_path: str,
     output_dir: str,
     model_paths: dict,
-    batch_size: int = 3,
+    batch_size: int = 4,
     batches_per_group: int = 3,
     depth_mode: str = 'da3',
     sharp_subbatch_size: int = 4,

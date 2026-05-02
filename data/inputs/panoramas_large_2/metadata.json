@@ -1,0 +1,116 @@
+{
+  "spatial_order": [
+    "9XNtayoPj0RkfzsUhTa3pA",
+    "QMru6Z0zkvEwd7C4Xy-bew",
+    "dbaKkqFppaleG7aaUqE3eg",
+    "2YFmMgtFWNFS6grvkw-3fw",
+    "5GK-CbJztbUCB37fMQDS_A",
+    "PbFem-_mzT_IXAE-GPMkCA",
+    "ves1DbKK7tWvrZdxux4wKw",
+    "xcGVVM1g0L4IvPeehNRP3w",
+    "9Ku6SzQYqzIPIsh53Qj2lg",
+    "qeLG3y26GMPP7O9guTE7LA",
+    "v2N_qgQvauE572DslY0FyA"
+  ],
+  "nodes": [
+    {
+      "id": "9XNtayoPj0RkfzsUhTa3pA",
+      "lat": 1.348085443929889,
+      "lon": 103.683651167704,
+      "date": "2024-07",
+      "heading": 6.181147355277637,
+      "pitch": 0.0972390687756817,
+      "has_depth": false
+    },
+    {
+      "id": "QMru6Z0zkvEwd7C4Xy-bew",
+      "lat": 1.348174188888994,
+      "lon": 103.6836485170825,
+      "date": "2024-07",
+      "heading": 0.0210400233118998,
+      "pitch": 0.09407243708152298,
+      "has_depth": false
+    },
+    {
+      "id": "dbaKkqFppaleG7aaUqE3eg",
+      "lat": 1.347995999002872,
+      "lon": 103.6836636256255,
+      "date": "2024-07",
+      "heading": 6.100200573944678,
+      "pitch": 0.09423582201439934,
+      "has_depth": false
+    },
+    {
+      "id": "2YFmMgtFWNFS6grvkw-3fw",
+      "lat": 1.348262067384802,
+      "lon": 103.6836847422469,
+      "date": "2024-07",
+      "heading": 3.3335818007863685,
+      "pitch": -0.08025356050121082,
+      "has_depth": false
+    },
+    {
+      "id": "5GK-CbJztbUCB37fMQDS_A",
+      "lat": 1.348350805024214,
+      "lon": 103.6837084211402,
+      "date": "2024-07",
+      "heading": 3.486909305806045,
+      "pitch": -0.08037313643415538,
+      "has_depth": false
+    },
+    {
+      "id": "PbFem-_mzT_IXAE-GPMkCA",
+      "lat": 1.34843467363218,
+      "lon": 103.6837451764456,
+      "date": "2024-07",
+      "heading": 3.6419422991878094,
+      "pitch": -0.09111406458460845,
+      "has_depth": false
+    },
+    {
+      "id": "ves1DbKK7tWvrZdxux4wKw",
+      "lat": 1.348511820785429,
+      "lon": 103.6837935945076,
+      "date": "2024-07",
+      "heading": 3.774648947887003,
+      "pitch": -0.09101486183400301,
+      "has_depth": false
+    },
+    {
+      "id": "xcGVVM1g0L4IvPeehNRP3w",
+      "lat": 1.348582549875206,
+      "lon": 103.6838506712968,
+      "date": "2024-07",
+      "heading": 3.875390739286411,
+      "pitch": -0.07921679188884297,
+      "has_depth": false
+    },
+    {
+      "id": "9Ku6SzQYqzIPIsh53Qj2lg",
+      "lat": 1.348646945076063,
+      "lon": 103.6839141979688,
+      "date": "2024-07",
+      "heading": 3.974857941788107,
+      "pitch": -0.07583763993969593,
+      "has_depth": false
+    },
+    {
+      "id": "qeLG3y26GMPP7O9guTE7LA",
+      "lat": 1.348705522949847,
+      "lon": 103.6839814355504,
+      "date": "2024-07",
+      "heading": 4.030136910218774,
+      "pitch": -0.08011241296343662,
+      "has_depth": false
+    },
+    {
+      "id": "v2N_qgQvauE572DslY0FyA",
+      "lat": 1.348760444365221,
+      "lon": 103.6840499101263,
+      "date": "2024-07",
+      "heading": 4.036433155667939,
+      "pitch": -0.08285466993789121,
+      "has_depth": false
+    }
+  ]
+}

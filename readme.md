@@ -1,54 +1,81 @@
 # Panoramic to 3DGS
 
-## TODO:
-- Allow lower pitch for the da3 view extracting process
-- Allow pipeline of large amounts of panorama like 30 panoramas. This means saving per pano, and processing da3 such that common points it shared.
+Convert nearby Google Street View-style panoramas (equirectangular JPEGs) into a merged 3D Gaussian Splat scene for novel view synthesis and immersive visualisation.
 
-## Project Goal
-Convert nearby Google Street View-style panoramas (equirectangular) into a merged 3D Gaussian Splat scene for novel view synthesis and immersive visualisation.
+## How it works
 
-The pipeline uses Apple SHARP to generate per-view Gaussians, and Depth Anything 3 (DA3) to produce a globally consistent point cloud that is used to clean and align those Gaussians.
+Each panorama is sliced into perspective views. Apple SHARP turns each view into a set of 3D Gaussians. Depth Anything 3 (DA3) estimates metric depth and camera pose across all panoramas, which is used to scale-align and globally position those Gaussians. The result is a set of PLY files that can be loaded together in any 3DGS viewer.
 
-## Current Focus
-Getting DA3 to produce a reliable global point cloud across multiple panoramas. The DA3 outputs have pose drift and jitter across panorama slices, so `DA3Model` filters them — but that filtering logic is still being revised.
-
-## Big Picture Pipeline
 ```
-Input: N nearby equirectangular panoramas
+Input: N equirectangular panoramas + metadata.json (lat/lon/heading)
        ↓
+  [SpatialGrouper]
+  - Orders panos by GPS proximity (greedy nearest-neighbour)
+  - Groups into overlapping batches of 3 for DA3
+
   [ViewExtractor]
-  ├─ 6 SHARP views per pano  (4 horizon + 2 poles, wide FOV)
-  └─ 8 DA3 views per pano    (horizon only, 16:9, 50% overlap)
-       ↓
-  [DA3Model]  ← ACTIVE WORK
-  - Multi-view depth + camera pose inference
-  - Filter jittery/drifting predictions per pano
-  - Output: per-pano consensus center + rotation, depth maps
-       ↓
+  - 6 SHARP views per pano  (horizon + floor, wide FOV)
+  - 18 DA3 views per pano   (horizon, 16:9, 20° stride)
+
+  [DA3Model]  — run in batches of 3 panos
+  - Multi-view metric depth + camera pose
+  - Filters jittery/inconsistent views
+  - Output: per-pano center + rotation, depth point cloud
+  - Results cached to disk so re-runs skip the model
+
+  [BatchAligner]
+  - Each DA3 batch shares 1 pano with the previous batch (bridge pano)
+  - Computes rigid transform aligning each batch's local frame to a global world frame
+  - Accumulates world-frame poses across all batches
+
   [SplatGenerator]
   - Apple SHARP: RGB → Gaussians3D per view
+
+  [SplatProcessor]  — run once per DA3 batch (~3 panos at a time)
+  - Scale-aligns Gaussians to DA3 depth using a 2D (depth × FOV) grid
+  - Special floor alignment for downward-facing views
+  - Applies global world poses (places each pano's Gaussians in world space)
+  - Trims by FOV, dead-zone (removes noisy mid-range Gaussians), keeps sky
+  - Inter-pano Voronoi trim: each Gaussian kept only if closest to its own pano
        ↓
-  [SplatProcessor]
-  - Align Gaussians to DA3 depth (scale correction)
-  - Apply DA3 global poses
-  - Trim by FOV, merge all splats
-       ↓
-Output: final_output.ply  (merged 3DGS)
+Output: group_{g}_batch_{b}.ply files  (one per DA3 batch, all in world space)
 ```
 
-## Architecture Summary
-- `datatype.py` — `View` dataclass: image path, yaw/pitch/FOV, focal length, pano_id, optional depth + splat
-- `components/ViewExtractor/` — slices equirectangular panos into perspective `View` objects (two strategies)
-- `components/DepthMapGenerator/`
-  - `DA360DepthModel` — panorama-level depth (single-pano, faster)
-  - `DA3Model` — multi-view depth + metric pose (multi-pano, current focus)
-- `components/SplatGenerator/` — wraps Apple SHARP inference
-- `components/SplatProcessor/` — model-free: depth alignment, FOV trimming, pose application, merging
-- `components/ImageCleaner/` — optional: removes people/objects via diffusion inpainting
-- `components/Saver/` — writes PLY point clouds and depth images
-- `main.py` — orchestrator; `depth_mode` toggle selects depth strategy (`'da3'`, `'da360'`, `'external'`, `None`)
+## Depth zones
+
+Each Gaussian is categorised by radial depth from the camera:
+
+| Zone | Range | Treatment |
+|------|-------|-----------|
+| Align | ≤ 10 m | Kept + used for DA3 scale alignment |
+| Near-keep | 10 – 48 m | Kept, not aligned |
+| Dead zone | 48 – 50 m | Dropped (noisy mid-range Gaussians) |
+| Sky | > 50 m | Kept, not aligned |
+
+## Architecture
+
+```
+panoramic-to-3dgs/
+├── pipeline_batched.py          # Main entry point for multi-pano runs
+├── main.py                      # Legacy single-group pipeline
+├── datatype.py                  # View dataclass
+└── components/
+    ├── SpatialGrouper.py        # GPS ordering + batch construction
+    ├── BatchAligner.py          # Rigid transform between DA3 local frames
+    ├── ViewExtractor/           # Equirectangular → perspective slices
+    ├── DepthMapGenerator/
+    │   ├── DA3Model.py          # Multi-view depth + pose (main)
+    │   └── DA360DepthModel.py   # Single-pano depth (legacy)
+    ├── SplatGenerator/          # Wraps Apple SHARP inference
+    ├── SplatProcessor/
+    │   ├── SplatProcessor.py    # Orchestrates alignment, trimming, merging
+    │   ├── alignment.py         # Scale alignment algorithms (2dgrid, zslab, y-ground)
+    │   └── utils.py             # Depth trimming, Voronoi, subsampling helpers
+    └── ImageCleaner/            # Optional: remove people via inpainting
+```
 
 ## Installation
+
 ```bash
 pip install -r requirements.txt
 
@@ -56,35 +83,52 @@ pip install -r requirements.txt
 wget https://ml-site.cdn-apple.com/models/sharp/sharp_2572gikvuh.pt -P ./models/
 
 # DA3 model
-huggingface-cli download depth-anything/DA3NESTED-GIANT-LARGE-1.1 --local-dir ./models/models--depth-anything--DA3NESTED-GIANT-LARGE-1.1
+huggingface-cli download depth-anything/DA3NESTED-GIANT-LARGE-1.1 \
+  --local-dir ./models/models--depth-anything--DA3NESTED-GIANT-LARGE-1.1
 pip install git+https://github.com/ByteDance-Seed/Depth-Anything-3.git
 ```
 
-## Running
-Configure paths and panorama inputs in `main.py`, then:
-```bash
-python main.py
+## Input format
+
+```
+data/inputs/my_location/
+├── metadata.json          # [{id, lat, lon, heading}, ...]
+├── pano_{id}.jpg
+├── pano_{id}.jpg
+└── ...
 ```
 
-Key `run_panoramic_pipeline` parameters:
-- `panorama_paths` — list of input pano image paths
-- `output_dir` — where to write outputs
-- `depth_mode` — `'da3'` (recommended), `'da360'`, `'external'`, or `None`
-- `model_paths` — dict with keys `'da360'`, `'da3'`, `'sharp'`
+`metadata.json` can be a flat list `[{id, lat, lon, heading}, ...]` or a dict `{nodes: [...], spatial_order: [...]}`.
 
-## Output Structure
+## Running
+
+Edit the paths at the bottom of `pipeline_batched.py` and run:
+
+```bash
+python pipeline_batched.py
+```
+
+Key parameters in `run_batched_pipeline`:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `batch_size` | 3 | Panos per DA3 call (VRAM limited) |
+| `batches_per_group` | 3 | DA3 batches before saving one set of PLYs |
+| `scale_mode` | `da3_2dgrid_global` | Gaussian scale alignment strategy |
+| `sharp_subbatch_size` | 4 | Panos processed before offloading Gaussians to CPU |
+
+## Output
+
 ```
 output_dir/
-├── views_pano_i_sharp/       # 6 SHARP perspective slices
-├── views_pano_i_da3/         # 8 DA3 perspective slices
-├── gs/                        # per-view intermediate PLY files
-└── final_output.ply           # merged 3D Gaussian splat
+├── views_{i}_da3/                # DA3 perspective slices (cached)
+├── views_{i}_sharp/              # SHARP perspective slices
+├── da3_cache_{i}_{j}_{k}.npz    # Cached DA3 poses + depth pts per batch
+├── group_0_batch_0.ply           # 3DGS output — load all PLYs together
+├── group_0_batch_1.ply
+├── group_0_batch_2.ply
+├── group_0_metadata.json
+└── ...
 ```
 
-## Manual DA3 CLI (reference)
-```bash
-da3 auto ./all_views \
-  --export-format glb \
-  --export-dir ./output_depth \
-  --model-dir ./models/models--depth-anything--DA3NESTED-GIANT-LARGE-1.1/snapshots/b2359bdf726fb44ef62acca04d629dcf158053e7
-```
+All PLY files share the same world coordinate frame and can be loaded simultaneously in any 3DGS viewer (e.g. SuperSplat, Gaussian Splatting WebGL viewer).
