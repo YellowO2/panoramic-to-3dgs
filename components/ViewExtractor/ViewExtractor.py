@@ -48,7 +48,7 @@ def extract_views(
     pano_h, pano_w = equ._img.shape[:2]
 
     slice_w = max(64, pano_w // slice_count)
-    slice_h = pano_h * 0.5
+    slice_h = pano_h * 0.49
     horizon_hfov = min(170.0, (360.0 / slice_count) + float(overlap_degrees))
 
     views = []
@@ -78,7 +78,7 @@ def extract_views(
             equ,
             0,
             -90,
-            95.0,
+            100.0,
             pole_size,
             pole_size,
             os.path.join(output_dir, f"{prefix}sharp_0_-90.jpg"),

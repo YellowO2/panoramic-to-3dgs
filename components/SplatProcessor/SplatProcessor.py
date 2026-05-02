@@ -7,9 +7,12 @@ from components.SplatProcessor.utils import (
     project_world_cloud_to_view,
     rotate_to_pose,
     trim_by_fov,
+    trim_by_cone,
+    trim_by_pitch_bottom,
     trim_by_max_depth,
     trim_by_pano_voronoi,
     correct_interpano_seams,
+    subsample_gaussians,
     merge,
 )
 from components.SplatProcessor.alignment import (
@@ -33,12 +36,14 @@ class SplatProcessor:
         smooth_sigma_m: float = 0.5,
         smooth_sigma_fov: float = 0.15,
         voronoi_buffer_m: float = 1.5,
+        floor_keep_fraction: float = 0.5,
     ):
         self.num_z_slabs = num_z_slabs
         self.num_fov_slabs = num_fov_slabs
         self.smooth_sigma_m = smooth_sigma_m
         self.smooth_sigma_fov = smooth_sigma_fov
         self.voronoi_buffer_m = voronoi_buffer_m
+        self.floor_keep_fraction = floor_keep_fraction
 
     def _resolve_ref_depth(
         self,
@@ -78,14 +83,29 @@ class SplatProcessor:
                 )
             case "da3_zslab" | "da3_zslab_global":
                 return align_da3_zslab(
-                    splat, ref_depth, fx, fy, w, h,
-                    self.num_z_slabs, self.MAX_DEPTH, self.smooth_sigma_m,
+                    splat,
+                    ref_depth,
+                    fx,
+                    fy,
+                    w,
+                    h,
+                    self.num_z_slabs,
+                    self.MAX_DEPTH,
+                    self.smooth_sigma_m,
                 )
             case _:  # da3_2dgrid, da3_2dgrid_global
                 return align_da3_2dgrid(
-                    splat, ref_depth, fx, fy, w, h,
-                    self.num_z_slabs, self.num_fov_slabs,
-                    self.MAX_DEPTH, self.smooth_sigma_m, self.smooth_sigma_fov,
+                    splat,
+                    ref_depth,
+                    fx,
+                    fy,
+                    w,
+                    h,
+                    self.num_z_slabs,
+                    self.num_fov_slabs,
+                    self.MAX_DEPTH,
+                    self.smooth_sigma_m,
+                    self.smooth_sigma_fov,
                 )
 
     def process(
@@ -136,7 +156,11 @@ class SplatProcessor:
             trimmed = align_near_edge(views, trimmed)
 
         elif scale_mode in (
-            "da3_per_point", "da3_zslab", "da3_zslab_global", "da3_2dgrid", "da3_2dgrid_global"
+            "da3_per_point",
+            "da3_zslab",
+            "da3_zslab_global",
+            "da3_2dgrid",
+            "da3_2dgrid_global",
         ):
             for i, (view, splat) in enumerate(zip(views, trimmed)):
                 _, center, _, R_c2w = view_poses[i]
@@ -152,7 +176,11 @@ class SplatProcessor:
                 pano_data = pano_poses.get(view.pano_id) if pano_poses else None
                 if pano_data is None:
                     continue
-                pts = da3_world_pts.get(view.pano_id) if isinstance(da3_world_pts, dict) else None
+                pts = (
+                    da3_world_pts.get(view.pano_id)
+                    if isinstance(da3_world_pts, dict)
+                    else None
+                )
                 if pts is None:
                     continue
                 pts_cam = (pano_data["rotation"] @ (pts - pano_data["center"]).T).T
@@ -170,7 +198,11 @@ class SplatProcessor:
                     continue
                 print(f"--- Floor alignment: pano {view.pano_id} ---")
                 trimmed[i] = align_floor_view(
-                    splat, view, all_da3_pts, center, R_c2w,
+                    splat,
+                    view,
+                    all_da3_pts,
+                    center,
+                    R_c2w,
                     max_depth=self.MAX_DEPTH,
                     smooth_sigma_frac=self.smooth_sigma_fov,
                 )
@@ -179,7 +211,17 @@ class SplatProcessor:
         processed_splats = []
         for i, (view, splat) in enumerate(zip(views, trimmed)):
             _, center, _, R_c2w = view_poses[i]
-            splat = trim_by_fov(splat, hfov_limit=view.hfov - 6.0)
+            if view.pitch == -90:
+                splat = trim_by_cone(splat, half_angle_deg=view.hfov / 2.0 - 1.0)
+                splat = subsample_gaussians(
+                    splat, keep_fraction=self.floor_keep_fraction
+                )
+            else:
+                splat = trim_by_fov(splat, hfov_limit=view.hfov - 6.0)
+                if view.pitch == 0:
+                    splat = trim_by_pitch_bottom(
+                        splat, max_down_deg=view.vfov / 2.0 - 1.0
+                    )
             splat = trim_by_max_depth(splat, self.MAX_DEPTH)
 
             if center is not None:
@@ -188,7 +230,11 @@ class SplatProcessor:
                 c2w[:3, 3] = center
                 splat = apply_transform(
                     splat,
-                    torch.tensor(c2w[:3, :], dtype=torch.float32, device=splat.mean_vectors.device),
+                    torch.tensor(
+                        c2w[:3, :],
+                        dtype=torch.float32,
+                        device=splat.mean_vectors.device,
+                    ),
                 )
             else:
                 splat = rotate_to_pose(splat, yaw=view.yaw, pitch=view.pitch)
@@ -198,7 +244,9 @@ class SplatProcessor:
         per_pano_splats: dict[int, list] = {}
         for pano_id, splat in processed_splats:
             per_pano_splats.setdefault(pano_id, []).append(splat)
-        per_pano_merged = {pid: merge(splats) for pid, splats in per_pano_splats.items()}
+        per_pano_merged = {
+            pid: merge(splats) for pid, splats in per_pano_splats.items()
+        }
 
         # Inter-pano Voronoi trim: keep each Gaussian only if it's closest (XZ) to its own pano.
         if pano_poses and len(per_pano_merged) > 1:

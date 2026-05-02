@@ -289,6 +289,52 @@ def trim_by_fov(gaussians, hfov_limit):
     )
 
 
+def subsample_gaussians(gaussians: Gaussians3D, keep_fraction: float) -> Gaussians3D:
+    if keep_fraction >= 1.0:
+        return gaussians
+    n = gaussians.mean_vectors.shape[1]
+    keep = max(1, int(n * keep_fraction))
+    idx = torch.randperm(n, device=gaussians.mean_vectors.device)[:keep]
+    return Gaussians3D(
+        mean_vectors=gaussians.mean_vectors[:, idx, :],
+        singular_values=gaussians.singular_values[:, idx, :],
+        quaternions=gaussians.quaternions[:, idx, :],
+        colors=gaussians.colors[:, idx, :],
+        opacities=gaussians.opacities[:, idx],
+    )
+
+
+def trim_by_cone(gaussians: Gaussians3D, half_angle_deg: float) -> Gaussians3D:
+    """Keep only Gaussians within a cone of half_angle_deg around the camera Z-axis (forward/down)."""
+    positions = gaussians.mean_vectors[0]
+    x, y, z = positions[:, 0], positions[:, 1], positions[:, 2]
+    radial_xy = torch.sqrt(x ** 2 + y ** 2)
+    limit = math.tan(math.radians(half_angle_deg))
+    mask = (z > 0) & (radial_xy / z.clamp(min=1e-6) <= limit)
+    return Gaussians3D(
+        mean_vectors=gaussians.mean_vectors[:, mask, :],
+        singular_values=gaussians.singular_values[:, mask, :],
+        quaternions=gaussians.quaternions[:, mask, :],
+        colors=gaussians.colors[:, mask, :],
+        opacities=gaussians.opacities[:, mask],
+    )
+
+
+def trim_by_pitch_bottom(gaussians: Gaussians3D, max_down_deg: float) -> Gaussians3D:
+    """Trim Gaussians below max_down_deg downward pitch (Y-down camera convention)."""
+    positions = gaussians.mean_vectors[0]
+    y, z = positions[:, 1], positions[:, 2]
+    limit = math.tan(math.radians(max_down_deg))
+    mask = (z > 0) & (y / z.clamp(min=1e-6) <= limit)
+    return Gaussians3D(
+        mean_vectors=gaussians.mean_vectors[:, mask, :],
+        singular_values=gaussians.singular_values[:, mask, :],
+        quaternions=gaussians.quaternions[:, mask, :],
+        colors=gaussians.colors[:, mask, :],
+        opacities=gaussians.opacities[:, mask],
+    )
+
+
 def trim_by_pano_voronoi(
     gaussians: Gaussians3D,
     own_center: np.ndarray,
