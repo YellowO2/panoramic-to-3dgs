@@ -18,7 +18,6 @@ from components.SplatProcessor.alignment import (
     align_da3_zslab,
     align_da3_2dgrid,
     align_da3_y_ground,
-    align_ground_view,
     elevation_estimate,
 )
 
@@ -172,15 +171,33 @@ class SplatProcessor:
                     continue
                 trimmed[i] = align_da3_y_ground(splat, da3_elev)
 
-        # Ground slice pass: align pitch≈-90 views using DA3 elevation regardless of scale_mode.
+        # Ground slice pass: align pitch≈-90 views with a synthetic flat-ground depth map.
+        # The ground is flat at z-depth = da3_elev (camera height above ground).
+        # Feeding this constant reference into align_da3_2dgrid lets each Gaussian be
+        # scaled individually based on how far it deviates from the expected depth.
         if da3_elev_per_pano:
             print("--- Step: Ground slice alignment ---")
             for i, (view, splat) in enumerate(zip(views, trimmed)):
                 if abs(view.pitch + 90) < 5.0:
                     da3_elev = da3_elev_per_pano.get(view.pano_id)
                     if da3_elev is not None:
-                        print(f"  Pano {view.pano_id} ground slice (pitch={view.pitch}°)")
-                        trimmed[i] = align_ground_view(splat, da3_elev)
+                        print(f"  Pano {view.pano_id} ground slice: flat ground ref at {da3_elev:.4f}m")
+                        synthetic_depth = np.full(
+                            (int(view.height), int(view.width)), da3_elev, dtype=np.float32
+                        )
+                        trimmed[i] = align_da3_2dgrid(
+                            splat,
+                            synthetic_depth,
+                            view.focal_px,
+                            view.focal_px,
+                            int(view.width),
+                            int(view.height),
+                            self.num_z_slabs,
+                            self.num_fov_slabs,
+                            self.MAX_DEPTH,
+                            self.smooth_sigma_m,
+                            self.smooth_sigma_fov,
+                        )
 
         # Step 3: trim FOV edges, apply world pose
         processed_splats = []
