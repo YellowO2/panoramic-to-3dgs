@@ -18,6 +18,9 @@ from components.SplatProcessor.utils import (
 )
 
 
+_EARTH_R = 6_371_000.0  # metres
+
+
 def load_panorama_folder(folder_path: str) -> tuple[list[str], list[str | None], list[dict]]:
     """Load panoramas from a folder containing metadata.json and pano_{id}.jpg / pano_{id}_depth.npy files.
 
@@ -37,12 +40,85 @@ def load_panorama_folder(folder_path: str) -> tuple[list[str], list[str | None],
     return panorama_paths, depth_paths, metadata
 
 
+def compute_google_pano_poses(metadata: list[dict]) -> dict[int, dict]:
+    """Build pano_poses from Google metadata (heading/lat/lon in radians/degrees).
+
+    The first panorama is the ENU origin (center = [0, 0, 0]).
+    Returns pano_poses dict keyed by pano index (0, 1, ...).
+    heading and pitch are expected in radians.
+    """
+    ref_lat = np.radians(metadata[0]["lat"])
+    ref_lon = np.radians(metadata[0]["lon"])
+
+    pano_poses = {}
+    for i, entry in enumerate(metadata):
+        lat = np.radians(entry["lat"])
+        lon = np.radians(entry["lon"])
+        h = entry["heading"]  # radians from North, clockwise
+
+        # ENU position relative to first panorama
+        east  = (lon - ref_lon) * np.cos(ref_lat) * _EARTH_R
+        north = (lat - ref_lat) * _EARTH_R
+        center = np.array([east, north, 0.0])
+
+        # Camera frame: X=right, Y=up, Z=forward (into scene)
+        # R_c2w columns = [right_in_ENU, up_in_ENU, forward_in_ENU]
+        R_c2w = np.array([
+            [ np.cos(h),  0.0,  np.sin(h)],   # East row
+            [-np.sin(h),  0.0,  np.cos(h)],   # North row
+            [ 0.0,        1.0,  0.0       ],   # Up row
+        ])
+        pano_rot = R_c2w.T  # R_w2pano — convention expected by SplatProcessor
+
+        pano_poses[i] = {"center": center, "rotation": pano_rot}
+        print(f"  [Google pose] Pano {i}: center=({east:.2f}m E, {north:.2f}m N), heading={np.degrees(h):.1f}°")
+
+    return pano_poses
+
+
+def load_google_depth_pts(
+    metadata: list[dict],
+    folder_path: str,
+    pano_poses: dict[int, dict],
+) -> dict[int, np.ndarray]:
+    """Backproject Google equirectangular depth maps to world-space point clouds.
+
+    Returns da3_pts_per_pano dict keyed by pano index, same format as DA3 output.
+    Sky pixels (depth <= 0) are discarded.
+    """
+    da3_pts_per_pano = {}
+    for i, entry in enumerate(metadata):
+        if not entry.get("has_depth"):
+            continue
+        depth_path = os.path.join(folder_path, f"pano_{entry['id']}_depth.npy")
+        if not os.path.exists(depth_path):
+            print(f"  [Google depth] Pano {i}: depth file missing, skipping.")
+            continue
+
+        depth = np.load(depth_path).astype(np.float32)
+        # panoramic_depth_to_pcd filters d <= 1e-3 (handles -1 sky sentinel)
+        local_pts, _ = panoramic_depth_to_pcd(depth)
+        if local_pts is None or len(local_pts) == 0:
+            continue
+
+        pose = pano_poses[i]
+        R_c2w = pose["rotation"].T  # pano_rot.T = R_c2w
+        center = pose["center"]
+        world_pts = (R_c2w @ local_pts.T).T + center
+        da3_pts_per_pano[i] = world_pts
+        print(f"  [Google depth] Pano {i}: {len(world_pts)} world points.")
+
+    return da3_pts_per_pano
+
+
 def run_panoramic_pipeline(
     panorama_paths: list[str],
     output_dir: str,
     clean_image=False,
-    depth_mode=None,  # 'da360' or 'da3' or 'external' or None
+    depth_mode=None,  # 'da360' | 'da3' | 'google' | 'external' | None
     external_depth_paths: list[str] = None,
+    metadata: list[dict] = None,       # required for depth_mode='google'
+    folder_path: str = None,           # required for depth_mode='google'
     model_paths=None,
 ):
     print(f"Starting pipeline for {len(panorama_paths)} panoramas | Mode: {depth_mode}")
@@ -86,14 +162,15 @@ def run_panoramic_pipeline(
             )
         )
 
-        # B. Extract DA3 views (for global poses)
-        da3_dir = os.path.join(output_dir, f"views_pano_{i}_da3")
-        os.makedirs(da3_dir, exist_ok=True)
-        all_da3_views.extend(
-            extract_views_for_da3(
-                current_image, da3_dir, prefix=f"pano_{i}_", pano_id=i
+        # B. Extract DA3 views (for global poses) — skipped in google mode
+        if depth_mode == "da3":
+            da3_dir = os.path.join(output_dir, f"views_pano_{i}_da3")
+            os.makedirs(da3_dir, exist_ok=True)
+            all_da3_views.extend(
+                extract_views_for_da3(
+                    current_image, da3_dir, prefix=f"pano_{i}_", pano_id=i
+                )
             )
-        )
 
     # 4. Global Multi-View Depth/Pose Generation (DA3)
     pano_poses = None
@@ -123,6 +200,15 @@ def run_panoramic_pipeline(
 
         del da3, da3_result, filtered_da3_views, da3_cols, da3_pts
         torch.cuda.empty_cache()
+
+    elif depth_mode == "google":
+        print("--- Step: Google Metadata Pose + Depth Processing ---")
+        pano_poses = compute_google_pano_poses(metadata)
+        da3_pts_per_pano = load_google_depth_pts(metadata, folder_path, pano_poses)
+        for pid, pts in da3_pts_per_pano.items():
+            saver.save_point_cloud(
+                pts, os.path.join(output_dir, f"google_debug_pano_{pid}.ply")
+            )
 
     # 5. Generate Splats (SHARP)
     print("--- Step: Splat Generation (SHARP) ---")
@@ -173,12 +259,15 @@ if __name__ == "__main__":
         "sharp": "models/sharp_2572gikvuh.pt",
     }
 
-    # --- Option A: folder input ---
-    panos, depths, meta = load_panorama_folder("data/inputs/panoramas_example")
+    # --- Option A: folder input with Google metadata poses ---
+    folder = "data/inputs/panoramas_example"
+    panos, depths, meta = load_panorama_folder(folder)
     run_panoramic_pipeline(
         panorama_paths=panos,
         output_dir="data/outputs/folder_test",
-        depth_mode="da3",
+        depth_mode="google",
+        metadata=meta,
+        folder_path=folder,
         model_paths=models,
     )
 
