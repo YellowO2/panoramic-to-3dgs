@@ -32,12 +32,12 @@ class SplatProcessor:
     def __init__(
         self,
         num_z_slabs: int = 500,
-        num_fov_slabs: int = 50,
+        num_fov_slabs: int = 250,
         smooth_sigma_m: float = 0.5,
         smooth_sigma_fov: float = 0.15,
         voronoi_buffer_m: float = 1.5,
         floor_keep_fraction: float = 0.35,
-        min_depth_coverage: float = 0.1,
+        min_depth_coverage: float = 0.8,
     ):
         self.num_z_slabs = num_z_slabs
         self.num_fov_slabs = num_fov_slabs
@@ -49,7 +49,8 @@ class SplatProcessor:
 
     def _depth_is_sufficient(self, ref_depth: np.ndarray, view: View) -> bool:
         n_valid = int((ref_depth > 0).sum())
-        min_required = max(16, int(view.width * view.height * self.min_depth_coverage))
+        # Need enough pts to meaningfully populate the alignment grid, not proportional to image size
+        min_required = max(16, int(self.num_z_slabs * self.num_fov_slabs * self.min_depth_coverage))
         print(f"  [Depth coverage] {n_valid} pts (min {min_required})")
         return n_valid >= min_required
 
