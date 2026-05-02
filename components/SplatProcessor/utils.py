@@ -302,6 +302,30 @@ def trim_depth_range(gaussians: Gaussians3D, min_depth: float, max_depth: float)
     )
 
 
+def split_depth_zones(
+    gaussians: Gaussians3D,
+    align_depth: float,
+    near_depth: float,
+    sky_depth: float,
+) -> tuple[Gaussians3D, Gaussians3D, Gaussians3D]:
+    """Single-pass split into three zones: align (≤align_depth), keep (align_depth, near_depth], sky (>sky_depth)."""
+    radial = torch.norm(gaussians.mean_vectors[0], dim=1)
+    m_align = radial <= align_depth
+    m_keep  = (radial > align_depth) & (radial <= near_depth)
+    m_sky   = radial > sky_depth
+
+    def _select(mask):
+        return Gaussians3D(
+            mean_vectors=gaussians.mean_vectors[:, mask, :],
+            singular_values=gaussians.singular_values[:, mask, :],
+            quaternions=gaussians.quaternions[:, mask, :],
+            colors=gaussians.colors[:, mask, :],
+            opacities=gaussians.opacities[:, mask],
+        )
+
+    return _select(m_align), _select(m_keep), _select(m_sky)
+
+
 def trim_by_fov(gaussians, hfov_limit):
     positions = gaussians.mean_vectors
     x, z = positions[0][:, 0], positions[0][:, 2]

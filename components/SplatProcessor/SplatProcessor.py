@@ -12,6 +12,7 @@ from components.SplatProcessor.utils import (
     trim_by_max_depth,
     trim_beyond_depth,
     trim_depth_range,
+    split_depth_zones,
     trim_by_pano_voronoi,
     correct_interpano_seams,
     subsample_gaussians,
@@ -38,8 +39,8 @@ class SplatProcessor:
         voronoi_buffer_m: float = 1.5,
         floor_keep_fraction: float = 0.6,
         min_depth_coverage: float = 1,
-        align_depth: float = 15.0,
-        near_depth: float = 20.0,
+        align_depth: float = 10.0,
+        near_depth: float = 48.0,
         sky_depth: float = 50.0,
     ):
         """
@@ -149,7 +150,7 @@ class SplatProcessor:
                     h,
                     self.num_z_slabs,
                     self.num_fov_slabs,
-                    self.near_depth,
+                    self.align_depth,
                     self.smooth_sigma_m,
                     self.smooth_sigma_fov,
                 )
@@ -185,16 +186,18 @@ class SplatProcessor:
             R_c2w = pano_rot.T @ R_local if pano_rot is not None else R_local
             view_poses.append((R_local, center, pano_rot, R_c2w))
 
-        # Step 1: split into four depth zones.
-        #   align_splats : ≤ align_depth            — used for DA3 scale alignment
-        #   keep_splats  : align_depth → near_depth — kept but skips alignment
-        #   dead zone    : near_depth  → sky_depth  — dropped (dirt Gaussians)
-        #   sky_splats   : > sky_depth              — kept, skips alignment
-        trimmed = [trim_by_max_depth(s, self.align_depth) for s in splats_list]
-        keep_splats = [
-            trim_depth_range(s, self.align_depth, self.near_depth) for s in splats_list
+        # Step 1: single-pass split into three zones.
+        #   trimmed     : ≤ align_depth            — used for DA3 scale alignment
+        #   keep_splats : align_depth → near_depth — kept but skips alignment
+        #   dead zone   : near_depth  → sky_depth  — dropped (dirt Gaussians)
+        #   sky_splats  : > sky_depth              — kept, skips alignment
+        zones = [
+            split_depth_zones(s, self.align_depth, self.near_depth, self.sky_depth)
+            for s in splats_list
         ]
-        sky_splats = [trim_beyond_depth(s, self.sky_depth) for s in splats_list]
+        trimmed = [z[0] for z in zones]
+        keep_splats = [z[1] for z in zones]
+        sky_splats = [z[2] for z in zones]
 
         # Pre-compute global DA3 cloud (used by floor alignment regardless of scale_mode)
         all_da3_pts = None
