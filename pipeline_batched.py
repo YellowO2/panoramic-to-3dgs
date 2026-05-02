@@ -268,26 +268,25 @@ def run_batched_pipeline(
                 da3_world_pts=batch_da3_pts,
                 scale_mode=scale_mode,
             )
-            partial_splats.append(partial)
+            # Save this batch's partial splat immediately
+            batch_ply = os.path.join(output_dir, f"group_{group_idx}_batch_{len(partial_splats)}.ply")
+            ref = batch_views[0]
+            save_ply(partial, f_px=ref.focal_px, image_shape=(ref.height, ref.width), path=batch_ply)
+            print(f"  Saved: {batch_ply}")
+            partial_splats.append(batch_ply)
             sharp_processed.update(batch_idxs)
 
             # Free this batch's per-pano data immediately
             for idx in batch_idxs:
                 del pano_to_views[idx]
                 del pano_to_gaussians[idx]
+            del partial
             torch.cuda.empty_cache()
             gc.collect()
 
-        merged_splat = merge_gaussians(partial_splats)
-
-        group_ply = os.path.join(output_dir, f"group_{group_idx}.ply")
-        ref = first_views[0]
-        save_ply(merged_splat, f_px=ref.focal_px, image_shape=(ref.height, ref.width), path=group_ply)
-        print(f"  Saved: {group_ply}")
-
         group_meta = {
             'group_id': group_idx,
-            'output_ply': f"group_{group_idx}.ply",
+            'output_plys': partial_splats,
             'pano_count': len(new_pano_ids),
             'panos': [
                 {
@@ -305,7 +304,7 @@ def run_batched_pipeline(
             json.dump(group_meta, f, indent=2)
 
         # Clear this group's data before starting the next
-        del pano_to_views, pano_to_gaussians, partial_splats, merged_splat, group_da3_pts
+        del pano_to_views, pano_to_gaussians, partial_splats, group_da3_pts
         torch.cuda.empty_cache()
         gc.collect()
 
