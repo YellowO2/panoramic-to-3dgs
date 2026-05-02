@@ -19,9 +19,15 @@ from datatype import View
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _move_to_cpu(g: Gaussians3D) -> Gaussians3D:
-    for attr, val in vars(g).items():
-        if isinstance(val, torch.Tensor):
-            setattr(g, attr, val.cpu())
+    for attr in dir(g):
+        if attr.startswith('_'):
+            continue
+        try:
+            val = getattr(g, attr)
+            if isinstance(val, torch.Tensor):
+                setattr(g, attr, val.cpu())
+        except Exception:
+            pass
     return g
 
 
