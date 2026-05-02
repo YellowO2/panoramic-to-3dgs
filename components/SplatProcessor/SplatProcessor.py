@@ -39,6 +39,54 @@ class SplatProcessor:
         self.smooth_sigma_fov = smooth_sigma_fov
         self.voronoi_buffer_m = voronoi_buffer_m
 
+    def _resolve_ref_depth(
+        self,
+        view: View,
+        center,
+        R_c2w,
+        scale_mode: str,
+        da3_world_pts,
+        all_da3_pts,
+    ):
+        """Return the reference depth map for one view, or None if unavailable."""
+        if scale_mode in ("da3_zslab_global", "da3_2dgrid_global"):
+            pts = all_da3_pts
+        elif isinstance(da3_world_pts, dict):
+            pts = da3_world_pts.get(view.pano_id)
+        else:
+            pts = da3_world_pts
+
+        if pts is not None and center is not None:
+            return project_world_cloud_to_view(
+                pts, center, R_c2w, view, max_depth=self.MAX_DEPTH * 1.5
+            )
+        if view.depth is not None:
+            return view.depth
+        return None
+
+    def _align_splat(
+        self, splat: Gaussians3D, ref_depth, view: View, scale_mode: str
+    ) -> Gaussians3D:
+        """Dispatch to the correct alignment function for the given scale_mode."""
+        fx = fy = view.focal_px
+        w, h = int(view.width), int(view.height)
+        match scale_mode:
+            case "da3_per_point":
+                return align_da3_per_point(
+                    splat, ref_depth, fx, fy, w, h, smooth_sigma=self.smooth_sigma_fov
+                )
+            case "da3_zslab" | "da3_zslab_global":
+                return align_da3_zslab(
+                    splat, ref_depth, fx, fy, w, h,
+                    self.num_z_slabs, self.MAX_DEPTH, self.smooth_sigma_m,
+                )
+            case _:  # da3_2dgrid, da3_2dgrid_global
+                return align_da3_2dgrid(
+                    splat, ref_depth, fx, fy, w, h,
+                    self.num_z_slabs, self.num_fov_slabs,
+                    self.MAX_DEPTH, self.smooth_sigma_m, self.smooth_sigma_fov,
+                )
+
     def process(
         self,
         views: list[View],
@@ -50,11 +98,13 @@ class SplatProcessor:
         """Align, trim, pose, and merge Gaussian splats.
 
         scale_mode:
-            'near_edge'     — match nearest-Z across slices (no DA3 required)
-            'da3_per_point' — per-Voronoi-cell DA3 scale
-            'da3_zslab'     — Z-depth band DA3 scale (slicing on z axis)
-            'da3_y_ground'  — Y-ground elevation alignment
-            'da3_zslab_global' — like da3_zslab but with global Z slabs computed from all views combined
+            'near_edge'        — match nearest-Z across slices (no DA3 required)
+            'da3_per_point'    — per-Voronoi-cell DA3 scale
+            'da3_zslab'        — Z-depth band DA3 scale
+            'da3_zslab_global' — da3_zslab with global slabs across all views
+            'da3_2dgrid'       — 2D (Z × FOV) grid DA3 scale
+            'da3_2dgrid_global'— da3_2dgrid with global slabs across all views
+            'da3_y_ground'     — Y-ground elevation alignment
         """
         # Pre-compute per-view world poses
         view_poses = []
@@ -71,17 +121,14 @@ class SplatProcessor:
         # Step 1: trim far points (camera space)
         trimmed = [trim_by_max_depth(splat, self.MAX_DEPTH) for splat in splats_list]
 
-        # Pre-compute DA3 ground elevation per pano (used by da3_y_ground mode and ground slice pass).
+        # Pre-compute DA3 ground elevation per pano (used by da3_y_ground and ground slice pass).
         da3_elev_per_pano: dict[int, float] = {}
         if isinstance(da3_world_pts, dict) and pano_poses:
             for pano_id, world_pts in da3_world_pts.items():
                 pano_data = pano_poses.get(pano_id)
                 if pano_data is None:
                     continue
-                center = pano_data["center"]
-                pano_rot = pano_data["rotation"]
-                R_w2c = pano_rot
-                pts_cam = (R_w2c @ (world_pts - center).T).T
+                pts_cam = (pano_data["rotation"] @ (world_pts - pano_data["center"]).T).T
                 elev = elevation_estimate(pts_cam[:, 1], pts_cam[:, 2])
                 if elev is not None and elev > 1e-6:
                     da3_elev_per_pano[pano_id] = elev
@@ -93,77 +140,24 @@ class SplatProcessor:
         print(f"--- Scale mode: {scale_mode} ---")
         if scale_mode == "near_edge":
             trimmed = align_near_edge(views, trimmed)
+
         elif scale_mode in (
-            "da3_per_point",
-            "da3_zslab",
-            "da3_zslab_global",
-            "da3_2dgrid",
-            "da3_2dgrid_global",
+            "da3_per_point", "da3_zslab", "da3_zslab_global", "da3_2dgrid", "da3_2dgrid_global"
         ):
             all_da3_pts = None
-            if scale_mode in ("da3_zslab_global", "da3_2dgrid_global") and isinstance(
-                da3_world_pts, dict
-            ):
+            if scale_mode in ("da3_zslab_global", "da3_2dgrid_global") and isinstance(da3_world_pts, dict):
                 parts = [pts for pts in da3_world_pts.values() if pts is not None]
                 all_da3_pts = np.concatenate(parts, axis=0) if parts else None
 
             for i, (view, splat) in enumerate(zip(views, trimmed)):
                 _, center, _, R_c2w = view_poses[i]
-                if scale_mode in ("da3_zslab_global", "da3_2dgrid_global"):
-                    pts = all_da3_pts
-                else:
-                    pts = (
-                        da3_world_pts.get(view.pano_id)
-                        if isinstance(da3_world_pts, dict)
-                        else da3_world_pts
-                    )
-                ref_depth = None
-                if pts is not None and center is not None:
-                    ref_depth = project_world_cloud_to_view(
-                        pts, center, R_c2w, view, max_depth=self.MAX_DEPTH * 1.5
-                    )
-                elif view.depth is not None:
-                    ref_depth = view.depth
-
+                ref_depth = self._resolve_ref_depth(
+                    view, center, R_c2w, scale_mode, da3_world_pts, all_da3_pts
+                )
                 if ref_depth is None:
                     continue
+                trimmed[i] = self._align_splat(splat, ref_depth, view, scale_mode)
 
-                if scale_mode == "da3_per_point":
-                    trimmed[i] = align_da3_per_point(
-                        splat,
-                        ref_depth,
-                        view.focal_px,
-                        view.focal_px,
-                        int(view.width),
-                        int(view.height),
-                        smooth_sigma=self.smooth_sigma_fov,
-                    )
-                elif scale_mode in ("da3_zslab", "da3_zslab_global"):
-                    trimmed[i] = align_da3_zslab(
-                        splat,
-                        ref_depth,
-                        view.focal_px,
-                        view.focal_px,
-                        int(view.width),
-                        int(view.height),
-                        self.num_z_slabs,
-                        self.MAX_DEPTH,
-                        self.smooth_sigma_m,
-                    )
-                else:  # da3_2dgrid, da3_2dgrid_global
-                    trimmed[i] = align_da3_2dgrid(
-                        splat,
-                        ref_depth,
-                        view.focal_px,
-                        view.focal_px,
-                        int(view.width),
-                        int(view.height),
-                        self.num_z_slabs,
-                        self.num_fov_slabs,
-                        self.MAX_DEPTH,
-                        self.smooth_sigma_m,
-                        self.smooth_sigma_fov,
-                    )
         elif scale_mode == "da3_y_ground":
             for i, (view, splat) in enumerate(zip(views, trimmed)):
                 da3_elev = da3_elev_per_pano.get(view.pano_id)
@@ -171,10 +165,8 @@ class SplatProcessor:
                     continue
                 trimmed[i] = align_da3_y_ground(splat, da3_elev)
 
-        # Ground slice pass: align pitch≈-90 views with a synthetic flat-ground depth map.
-        # The ground is flat at z-depth = da3_elev (camera height above ground).
-        # Feeding this constant reference into align_da3_2dgrid lets each Gaussian be
-        # scaled individually based on how far it deviates from the expected depth.
+        # Ground slice pass: synthetic flat-ground depth at z = da3_elev, then per-point 2D alignment.
+        # Runs regardless of scale_mode so ground is always handled when DA3 data is available.
         if da3_elev_per_pano:
             print("--- Step: Ground slice alignment ---")
             for i, (view, splat) in enumerate(zip(views, trimmed)):
@@ -185,19 +177,7 @@ class SplatProcessor:
                         synthetic_depth = np.full(
                             (int(view.height), int(view.width)), da3_elev, dtype=np.float32
                         )
-                        trimmed[i] = align_da3_2dgrid(
-                            splat,
-                            synthetic_depth,
-                            view.focal_px,
-                            view.focal_px,
-                            int(view.width),
-                            int(view.height),
-                            self.num_z_slabs,
-                            self.num_fov_slabs,
-                            self.MAX_DEPTH,
-                            self.smooth_sigma_m,
-                            self.smooth_sigma_fov,
-                        )
+                        trimmed[i] = self._align_splat(splat, synthetic_depth, view, "da3_2dgrid")
 
         # Step 3: trim FOV edges, apply world pose
         processed_splats = []
@@ -212,11 +192,7 @@ class SplatProcessor:
                 c2w[:3, 3] = center
                 splat = apply_transform(
                     splat,
-                    torch.tensor(
-                        c2w[:3, :],
-                        dtype=torch.float32,
-                        device=splat.mean_vectors.device,
-                    ),
+                    torch.tensor(c2w[:3, :], dtype=torch.float32, device=splat.mean_vectors.device),
                 )
             else:
                 splat = rotate_to_pose(splat, yaw=view.yaw, pitch=view.pitch)
@@ -226,9 +202,7 @@ class SplatProcessor:
         per_pano_splats: dict[int, list] = {}
         for pano_id, splat in processed_splats:
             per_pano_splats.setdefault(pano_id, []).append(splat)
-        per_pano_merged = {
-            pid: merge(splats) for pid, splats in per_pano_splats.items()
-        }
+        per_pano_merged = {pid: merge(splats) for pid, splats in per_pano_splats.items()}
 
         # Inter-pano Voronoi trim: keep each Gaussian only if it's closest (XZ) to its own pano.
         if pano_poses and len(per_pano_merged) > 1:

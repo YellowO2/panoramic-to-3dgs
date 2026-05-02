@@ -1,4 +1,5 @@
 import os
+import json
 import torch
 import cv2
 import numpy as np
@@ -15,6 +16,25 @@ from components.SplatProcessor.utils import (
     panoramic_depth_to_pcd,
     backproject_views_to_pcd,
 )
+
+
+def load_panorama_folder(folder_path: str) -> tuple[list[str], list[str | None], list[dict]]:
+    """Load panoramas from a folder containing metadata.json and pano_{id}.jpg / pano_{id}_depth.npy files.
+
+    Returns (panorama_paths, depth_paths, metadata) where depth_paths[i] is None if no depth file exists.
+    """
+    with open(os.path.join(folder_path, "metadata.json")) as f:
+        metadata = json.load(f)
+
+    panorama_paths = []
+    depth_paths = []
+    for entry in metadata:
+        pid = entry["id"]
+        panorama_paths.append(os.path.join(folder_path, f"pano_{pid}.jpg"))
+        depth_file = os.path.join(folder_path, f"pano_{pid}_depth.npy")
+        depth_paths.append(depth_file if os.path.exists(depth_file) else None)
+
+    return panorama_paths, depth_paths, metadata
 
 
 def run_panoramic_pipeline(
@@ -152,15 +172,26 @@ if __name__ == "__main__":
         "da3": "models/models--depth-anything--DA3NESTED-GIANT-LARGE-1.1/snapshots/b2359bdf726fb44ef62acca04d629dcf158053e7",
         "sharp": "models/sharp_2572gikvuh.pt",
     }
-    panos = [
-        "data/inputs/round1.jpg",
-        "data/inputs/round2.jpg",
-        "data/inputs/round3_2.jpg",
-        "data/inputs/round_4.jpg",
-    ]
+
+    # --- Option A: folder input ---
+    panos, depths, meta = load_panorama_folder("data/inputs/panoramas_example")
     run_panoramic_pipeline(
         panorama_paths=panos,
-        output_dir="data/outputs/multi_pano_test",
+        output_dir="data/outputs/folder_test",
         depth_mode="da3",
         model_paths=models,
     )
+
+    # --- Option B: manual list (legacy) ---
+    # panos = [
+    #     "data/inputs/round1.jpg",
+    #     "data/inputs/round2.jpg",
+    #     "data/inputs/round3_2.jpg",
+    #     "data/inputs/round_4.jpg",
+    # ]
+    # run_panoramic_pipeline(
+    #     panorama_paths=panos,
+    #     output_dir="data/outputs/multi_pano_test",
+    #     depth_mode="da3",
+    #     model_paths=models,
+    # )
