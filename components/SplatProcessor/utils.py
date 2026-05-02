@@ -276,6 +276,19 @@ def trim_by_max_depth(gaussians: Gaussians3D, max_depth: float) -> Gaussians3D:
     )
 
 
+def trim_beyond_depth(gaussians: Gaussians3D, min_depth: float) -> Gaussians3D:
+    """Keep only Gaussians beyond min_depth (i.e. the far / sky portion)."""
+    radial = torch.norm(gaussians.mean_vectors[0], dim=1)
+    mask = radial > min_depth
+    return Gaussians3D(
+        mean_vectors=gaussians.mean_vectors[:, mask, :],
+        singular_values=gaussians.singular_values[:, mask, :],
+        quaternions=gaussians.quaternions[:, mask, :],
+        colors=gaussians.colors[:, mask, :],
+        opacities=gaussians.opacities[:, mask],
+    )
+
+
 def trim_by_fov(gaussians, hfov_limit):
     positions = gaussians.mean_vectors
     x, z = positions[0][:, 0], positions[0][:, 2]
