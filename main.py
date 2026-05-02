@@ -14,7 +14,9 @@ from sharp.utils.gaussians import save_ply
 from components.SplatProcessor.utils import backproject_views_to_pcd
 
 
-def load_panorama_folder(folder_path: str) -> tuple[list[str], list[str | None], list[dict]]:
+def load_panorama_folder(
+    folder_path: str,
+) -> tuple[list[str], list[str | None], list[dict]]:
     """Load panoramas from a folder containing metadata.json and pano_{id}.jpg / pano_{id}_depth.npy files.
 
     Returns (panorama_paths, depth_paths, metadata) where depth_paths[i] is None if no depth file exists.
@@ -31,7 +33,6 @@ def load_panorama_folder(folder_path: str) -> tuple[list[str], list[str | None],
         depth_paths.append(depth_file if os.path.exists(depth_file) else None)
 
     return panorama_paths, depth_paths, metadata
-
 
 
 def run_panoramic_pipeline(
@@ -76,7 +77,7 @@ def run_panoramic_pipeline(
                 current_image,
                 sharp_dir,
                 overlap_degrees=10,
-                slice_count=6,
+                slice_count=5,
                 prefix=f"pano_{i}_",
                 panorama_depth=pano_depth,
                 pano_id=i,
