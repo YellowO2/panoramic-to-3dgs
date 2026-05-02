@@ -38,6 +38,8 @@ class SplatProcessor:
         voronoi_buffer_m: float = 1.5,
         floor_keep_fraction: float = 0.6,
         min_depth_coverage: float = 1,
+        max_depth: float = 200.0,
+        align_max_depth: float = 10.0,
     ):
         self.num_z_slabs = num_z_slabs
         self.num_fov_slabs = num_fov_slabs
@@ -46,6 +48,8 @@ class SplatProcessor:
         self.voronoi_buffer_m = voronoi_buffer_m
         self.floor_keep_fraction = floor_keep_fraction
         self.min_depth_coverage = min_depth_coverage
+        self.MAX_DEPTH = max_depth
+        self.ALIGN_DEPTH = align_max_depth
 
     def _depth_is_sufficient(self, ref_depth: np.ndarray, view: View) -> bool:
         n_valid = int((ref_depth > 0).sum())
@@ -97,7 +101,7 @@ class SplatProcessor:
 
         if pts is not None and center is not None:
             return project_world_cloud_to_view(
-                pts, center, R_c2w, view, max_depth=self.MAX_DEPTH * 1.5
+                pts, center, R_c2w, view, max_depth=self.ALIGN_DEPTH * 1.5
             )
         if view.depth is not None:
             return view.depth
@@ -123,7 +127,7 @@ class SplatProcessor:
                     w,
                     h,
                     self.num_z_slabs,
-                    self.MAX_DEPTH,
+                    self.ALIGN_DEPTH,
                     self.smooth_sigma_m,
                 )
             case _:  # da3_2dgrid, da3_2dgrid_global
@@ -136,7 +140,7 @@ class SplatProcessor:
                     h,
                     self.num_z_slabs,
                     self.num_fov_slabs,
-                    self.MAX_DEPTH,
+                    self.ALIGN_DEPTH,
                     self.smooth_sigma_m,
                     self.smooth_sigma_fov,
                 )
@@ -241,7 +245,7 @@ class SplatProcessor:
                     all_da3_pts,
                     center,
                     R_c2w,
-                    max_depth=self.MAX_DEPTH,
+                    max_depth=self.ALIGN_DEPTH,
                     smooth_sigma_frac=self.smooth_sigma_fov,
                 )
 
