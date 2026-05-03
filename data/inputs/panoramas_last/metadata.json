@@ -1,0 +1,58 @@
+{
+  "spatial_order": [
+    "DXinODKHtHzCEQs15YGrfQ",
+    "B9INPieFMjY_4paUrgg7Gw",
+    "20b2wojJaM83QHvZQH1Cbw",
+    "ucOCLT12vQCAPLeUibWhUw",
+    "YOje8L-TtwnUzPIoFWd5RQ",
+    "6bH_UmuL4hczwu1_BteHcw",
+    "12I1RhYTP7OnpiCtyX3OFQ"
+  ],
+  "nodes": [
+    {
+      "id": "DXinODKHtHzCEQs15YGrfQ",
+      "lat": 38.37052788646373,
+      "lon": 141.0666355062622,
+      "date": "2026-01",
+      "heading": 1.4893981396571696,
+      "pitch": -0.008337957898874582,
+      "has_depth": false
+    },
+    {
+      "id": "B9INPieFMjY_4paUrgg7Gw",
+      "lat": 38.37050887206853,
+      "lon": 141.0665112737911,
+      "date": "2026-01",
+      "heading": 4.6391163640489035,
+      "pitch": 0.00796444955599097,
+      "has_depth": false
+    },
+    {
+      "id": "20b2wojJaM83QHvZQH1Cbw",
+      "lat": 38.37052540097717,
+      "lon": 141.0667914327424,
+      "date": "2026-01",
+      "heading": 1.6973874255248866,
+      "pitch": 0.002344513865651257,
+      "has_depth": false
+    },
+    {
+      "id": "ucOCLT12vQCAPLeUibWhUw",
+      "lat": 38.37050466195204,
+      "lon": 141.0663817743407,
+      "date": "2026-01",
+      "heading": 1.4674672743964763,
+      "pitch": -0.006827013454418127,
+      "has_depth": false
+    },
+    {
+      "id": "YOje8L-TtwnUzPIoFWd5RQ",
+      "lat": 38.37049073349203,
+      "lon": 141.0662464355786,
+      "date": "2026-01",
+      "heading": 4.63561963353763,
+      "pitch": 0.0029140308647647023,
+      "has_depth": false
+    }
+  ]
+}
