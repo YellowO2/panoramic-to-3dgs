@@ -1,0 +1,16 @@
+{
+  "spatial_order": [
+    "bzgCVKhSEhBTsXc0HfkIGQ"
+  ],
+  "nodes": [
+    {
+      "id": "bzgCVKhSEhBTsXc0HfkIGQ",
+      "lat": 1.344915409925868,
+      "lon": 103.6787786196224,
+      "date": "2022-05",
+      "heading": 1.684954591133906,
+      "pitch": -0.014617558591226923,
+      "has_depth": false
+    }
+  ]
+}
