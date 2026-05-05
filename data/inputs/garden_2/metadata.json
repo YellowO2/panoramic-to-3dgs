@@ -1,0 +1,20 @@
+{
+  "spatial_order": [
+    "h8X0EVI46fK9H3qiVDveHw",
+    "Fuw2M34jQ9xBYsp-ORonlw",
+    "XwCTBgq563UH-sNLqRIFSg",
+    "j7eCYm8BHNkIAV_Gg_Eeow",
+    "O30OFUNO0wnp2KgDPfYkzQ"
+  ],
+  "nodes": [
+    {
+      "id": "h8X0EVI46fK9H3qiVDveHw",
+      "lat": 1.281776254049534,
+      "lon": 103.8640348060269,
+      "date": "2014-05",
+      "heading": 1.3428395911801472,
+      "pitch": 0.05689297720930826,
+      "has_depth": false
+    }
+  ]
+}
