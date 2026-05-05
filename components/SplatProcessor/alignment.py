@@ -457,6 +457,56 @@ def _align_floor_spatial_grid(
     return _apply_per_gauss_scale(gaussians, per_gauss_scale)
 
 
+def _floor_elevation_fallback(
+    gaussians: Gaussians3D,
+    all_da3_pts: np.ndarray,
+    center: np.ndarray,
+    R_c2w: np.ndarray,
+    view,
+) -> Gaussians3D:
+    """Fallback floor alignment: estimate elevation from unfiltered DA3 cloud vs center-Gaussians Z."""
+    R_w2c = R_c2w.T
+    pts_cam = (R_w2c @ (all_da3_pts - center).T).T
+    fwd = pts_cam[pts_cam[:, 2] > 0.1]
+    if len(fwd) < 4:
+        print("  [Floor] Elevation fallback: too few forward DA3 pts, skipping.")
+        return gaussians
+
+    z_thresh = np.percentile(fwd[:, 2], 0.5)
+    near = fwd[fwd[:, 2] <= z_thresh]
+    da3_elev = float(np.median(near[:, 2]))
+
+    w, h = int(view.width), int(view.height)
+    pixel_x, pixel_y, depth_z, _, valid = project_gaussians_to_2d(
+        gaussians, view.focal_px, view.focal_px, w, h
+    )
+    if valid.sum() < 16:
+        print("  [Floor] Elevation fallback: too few valid Gaussians, skipping.")
+        return gaussians
+
+    valid_idx = np.where(valid)[0]
+    cx, cy = w / 2.0, h / 2.0
+    r_limit = min(w, h) * 0.2
+    radial = np.sqrt((pixel_x[valid_idx] - cx) ** 2 + (pixel_y[valid_idx] - cy) ** 2)
+    center_z = depth_z[valid_idx][radial <= r_limit]
+
+    if len(center_z) < 4:
+        print("  [Floor] Elevation fallback: too few center Gaussians, skipping.")
+        return gaussians
+
+    splat_elev = float(np.median(center_z))
+    if splat_elev <= 1e-6:
+        print("  [Floor] Elevation fallback: invalid splat elevation, skipping.")
+        return gaussians
+
+    scale = da3_elev / splat_elev
+    print(
+        f"  [Floor] Elevation fallback (result may be imprecise): "
+        f"da3_elev={da3_elev:.3f}m  splat_elev={splat_elev:.3f}m  scale={scale:.4f}"
+    )
+    return scale_gaussians(gaussians, scale)
+
+
 def align_floor_view(
     gaussians: Gaussians3D,
     view,
@@ -476,8 +526,8 @@ def align_floor_view(
 
     filled_depth = _plane_fill_depth(sparse_depth)
     if filled_depth is None:
-        print("  [Floor] Too few DA3 points, skipping floor alignment.")
-        return gaussians
+        print("  [Floor] Too few DA3 pts for plane fill, trying elevation fallback...")
+        return _floor_elevation_fallback(gaussians, all_da3_pts, center, R_c2w, view)
 
     return _align_floor_spatial_grid(
         gaussians, filled_depth,
