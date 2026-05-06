@@ -68,9 +68,15 @@ class DA360DepthModel:
         depth: np.ndarray,
         image: Optional[np.ndarray] = None,
         v_fov_deg: float = None,
-        max_depth_mult: float = 5.0,
+        max_depth_mult: float = 4.0,
+        max_pts: int = 1_000_000,
     ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         """Backproject an equirectangular depth map to a 3D point cloud."""
+        h, w = depth.shape
+        stride = max(1, int((h * w / max_pts) ** 0.5))
+        depth = depth[::stride, ::stride]
+        if image is not None:
+            image = image[::stride, ::stride]
         h, w = depth.shape
         if v_fov_deg is None:
             theta_start, theta_end = 0.0, np.pi
@@ -91,9 +97,7 @@ class DA360DepthModel:
 
         colors = None
         if image is not None:
-            img_resized = cv2.resize(image, (w, h), interpolation=cv2.INTER_AREA)
-            img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB) if image.shape[2] == 3 else image
-            colors = img_rgb.reshape(-1, 3) / 255.0
+            colors = image.reshape(-1, 3) / 255.0
 
         d_flat = depth.flatten()
         valid = d_flat > 1e-3
