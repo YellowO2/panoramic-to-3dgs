@@ -114,19 +114,4 @@ def extract_views_for_da3(
         )
         yaw += step_degrees
 
-    # Downward views at coarser yaw spacing
-    for yaw in [0.0, 90.0, 180.0, 270.0]:
-        for pitch in [-30.0, -60.0]:
-            filename = f"{prefix}da3_{int(yaw)}_{int(pitch)}.jpg"
-            views.append(
-                _extract_slice(equ, yaw, pitch, HFOV, slice_w, slice_h,
-                               os.path.join(output_dir, filename), pano_id)
-            )
-
-    # Floor view
-    views.append(
-        _extract_slice(equ, 0, -90, HFOV, slice_w, slice_w,
-                       os.path.join(output_dir, f"{prefix}da3_0_-90.jpg"), pano_id)
-    )
-
     return views
