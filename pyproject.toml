@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "panoramic-to-3dgs"
+version = "0.1.0"
+description = "Convert panoramic images into 3D Gaussian Splat scenes"
+requires-python = ">=3.10"
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools]
+py-modules = ["datatype"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["third_party*", "reference*", "data*", "models*", "tests*"]
