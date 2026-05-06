@@ -77,6 +77,12 @@ panoramic-to-3dgs/
 ## Installation
 
 ```bash
+# Install as a package (for use in other projects)
+pip install git+https://github.com/YellowO2/panoramic-to-3dgs.git
+
+# Or clone and install locally
+git clone https://github.com/YellowO2/panoramic-to-3dgs.git
+cd panoramic-to-3dgs
 pip install -r requirements.txt
 
 # SHARP model
