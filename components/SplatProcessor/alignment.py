@@ -467,14 +467,20 @@ def _floor_elevation_fallback(
     """Fallback floor alignment: estimate elevation from unfiltered DA3 cloud vs center-Gaussians Z."""
     R_w2c = R_c2w.T
     pts_cam = (R_w2c @ (all_da3_pts - center).T).T
-    fwd = pts_cam[pts_cam[:, 2] > 0.1]
-    if len(fwd) < 4:
+    # pts_cam[:, 2] = vertical distance below camera (Y-down: positive = ground direction)
+    # pts_cam[:, 0], pts_cam[:, 1] = horizontal axes in floor camera frame
+    below = pts_cam[pts_cam[:, 2] > 0.1]
+    if len(below) < 4:
         print("  [Floor] Elevation fallback: too few forward DA3 pts, skipping.")
         return gaussians
 
-    z_thresh = np.percentile(fwd[:, 2], 0.5)
-    near = fwd[fwd[:, 2] <= z_thresh]
-    da3_elev = float(np.median(near[:, 2]))
+    # Filter to nearby points by horizontal distance, then take 99th pct Z (deepest = ground)
+    horiz_dist = np.sqrt(below[:, 0] ** 2 + below[:, 1] ** 2)
+    max_horiz = float(np.percentile(horiz_dist, 50))
+    nearby = below[horiz_dist <= max_horiz]
+    if len(nearby) < 4:
+        nearby = below
+    da3_elev = float(np.percentile(nearby[:, 2], 99))
 
     w, h = int(view.width), int(view.height)
     pixel_x, pixel_y, depth_z, _, valid = project_gaussians_to_2d(
