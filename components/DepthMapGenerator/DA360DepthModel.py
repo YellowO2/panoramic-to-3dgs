@@ -1,6 +1,6 @@
 import os
 import sys
-from typing import Tuple
+from typing import Optional, Tuple
 import torch
 import cv2
 import numpy as np
@@ -62,3 +62,42 @@ class DA360DepthModel:
         pred_depth = cv2.resize(pred_depth, (original_w, original_h), interpolation=cv2.INTER_LINEAR)
         
         return pred_depth, img_rgb
+
+    @staticmethod
+    def to_world_pts(
+        depth: np.ndarray,
+        image: Optional[np.ndarray] = None,
+        v_fov_deg: float = None,
+        max_depth_mult: float = 5.0,
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """Backproject an equirectangular depth map to a 3D point cloud."""
+        h, w = depth.shape
+        if v_fov_deg is None:
+            theta_start, theta_end = 0.0, np.pi
+        else:
+            v_fov_rad = np.radians(v_fov_deg)
+            theta_start = np.pi / 2.0 - v_fov_rad / 2.0
+            theta_end = np.pi / 2.0 + v_fov_rad / 2.0
+
+        theta = np.linspace(theta_start, theta_end, h)
+        theta_grid = np.repeat(theta.reshape(h, 1), w, axis=1)
+        phi = np.linspace(-np.pi, np.pi, w)
+        phi_grid = np.repeat(phi.reshape(1, w), h, axis=0)
+
+        x = depth * np.sin(theta_grid) * np.sin(phi_grid)
+        y = depth * np.cos(theta_grid)
+        z = depth * np.sin(theta_grid) * np.cos(phi_grid)
+        points = np.stack([x.flatten(), y.flatten(), z.flatten()], axis=1)
+
+        colors = None
+        if image is not None:
+            img_resized = cv2.resize(image, (w, h), interpolation=cv2.INTER_AREA)
+            img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB) if image.shape[2] == 3 else image
+            colors = img_rgb.reshape(-1, 3) / 255.0
+
+        d_flat = depth.flatten()
+        valid = d_flat > 1e-3
+        if np.any(valid):
+            valid &= d_flat < (np.median(d_flat[valid]) * max_depth_mult)
+
+        return points[valid], (colors[valid] if colors is not None else None)

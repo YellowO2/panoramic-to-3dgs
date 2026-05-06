@@ -42,6 +42,7 @@ def run_panoramic_pipeline(
     depth_mode=None,  # 'da360' | 'da3' | 'external' | None
     external_depth_paths: list[str] = None,
     model_paths=None,
+    generate_pano_ids: list[int] | None = None,  # None = generate splats for all panos
 ):
     print(f"Starting pipeline for {len(panorama_paths)} panoramas | Mode: {depth_mode}")
     os.makedirs(output_dir, exist_ok=True)
@@ -49,6 +50,13 @@ def run_panoramic_pipeline(
 
     all_sharp_views = []
     all_da3_views = []
+    pano_poses = None
+    da3_pts_per_pano = None
+
+    da360_model = None
+    if depth_mode == "da360":
+        da360_model = DA360DepthModel(model_paths["da360"])
+        da3_pts_per_pano = {}
 
     for i, pano_path in enumerate(panorama_paths):
         print(f"--- Processing Panorama {i+1}: {pano_path} ---")
@@ -59,15 +67,17 @@ def run_panoramic_pipeline(
             cleaner.clean(current_image, output_path=cleaned_path)
             current_image = cleaned_path
 
-        # individual DA360 for alignment/debug if requested
-        pano_depth = None
-        # if depth_mode == 'da360':
-        #     da360 = DA360DepthModel(model_paths['da360'])
-        #     pano_depth, pano_rgb = da360.predict(current_image)
-        #     pcd_pts, pcd_cols = panoramic_depth_to_pcd(pano_depth, pano_rgb)
-        #     saver.save_point_cloud(pcd_pts, os.path.join(output_dir, f"pano_{i}_da360.ply"), colors=pcd_cols)
-        # elif depth_mode == 'external' and external_depth_paths:
-        #     pano_depth = cv2.imread(external_depth_paths[i], cv2.IMREAD_UNCHANGED)
+        if depth_mode == "da360":
+            pano_depth, pano_rgb = da360_model.predict(current_image)
+            world_pts, world_cols = DA360DepthModel.to_world_pts(pano_depth, pano_rgb)
+            da3_pts_per_pano[i] = world_pts
+            saver.save_point_cloud(
+                world_pts,
+                os.path.join(output_dir, f"da360_debug_pano_{i}.ply"),
+                colors=world_cols,
+            )
+        elif depth_mode == "external" and external_depth_paths:
+            pano_depth = cv2.imread(external_depth_paths[i], cv2.IMREAD_UNCHANGED)
 
         # A. Extract SHARP views (for splats)
         sharp_dir = os.path.join(output_dir, f"views_pano_{i}_sharp")
@@ -79,12 +89,12 @@ def run_panoramic_pipeline(
                 overlap_degrees=20,
                 slice_count=6,
                 prefix=f"pano_{i}_",
-                panorama_depth=pano_depth,
+                panorama_depth=None,
                 pano_id=i,
             )
         )
 
-        # B. Extract DA3 views (for global poses) — skipped in google mode
+        # B. Extract DA3 views (for global poses)
         if depth_mode == "da3":
             da3_dir = os.path.join(output_dir, f"views_pano_{i}_da3")
             os.makedirs(da3_dir, exist_ok=True)
@@ -94,9 +104,19 @@ def run_panoramic_pipeline(
                 )
             )
 
+    # DA360 pose: single-pano uses identity (world = panorama camera frame).
+    # Multi-pano DA360 has no inter-pano pose estimation — alignment disabled.
+    if depth_mode == "da360":
+        if len(panorama_paths) == 1:
+            pano_poses = {0: {"center": np.zeros(3), "rotation": np.eye(3)}}
+        else:
+            print(
+                "Warning: multi-pano DA360 has no inter-pano pose estimation; "
+                "depth alignment disabled."
+            )
+            da3_pts_per_pano = None
+
     # 4. Global Multi-View Depth/Pose Generation (DA3)
-    pano_poses = None
-    da3_pts_per_pano = None
     if depth_mode == "da3":
         print("--- Step: DA3 Global Pose Processing ---")
         da3 = DA3Model(model_paths["da3"])
@@ -126,8 +146,11 @@ def run_panoramic_pipeline(
     # 5. Generate Splats (SHARP)
     print("--- Step: Splat Generation (SHARP) ---")
     gs_generator = SplatGenerator(model_paths["sharp"])
-    all_sharp_views = all_sharp_views[:]  # use less slice now as not enough ram
-    print(f"length of all_sharp_views: {len(all_sharp_views)}")
+    if generate_pano_ids is not None:
+        generate_set = set(generate_pano_ids)
+        all_sharp_views = [v for v in all_sharp_views if v.pano_id in generate_set]
+    print(f"Generating splats for {len(all_sharp_views)} views across panos: "
+          f"{sorted({v.pano_id for v in all_sharp_views})}")
     gaussian_list = gs_generator.generate_from_views(
         all_sharp_views, output_dir=os.path.join(output_dir, "gs")
     )

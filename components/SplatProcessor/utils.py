@@ -3,7 +3,6 @@ import numpy as np
 import math
 import cv2
 import os
-from typing import Tuple, Optional
 from scipy.spatial.transform import Rotation
 from scipy.ndimage import gaussian_filter1d
 from sharp.utils.gaussians import Gaussians3D, apply_transform
@@ -72,49 +71,6 @@ def backproject_views_to_pcd(views: list, da3_result):
         np.concatenate(all_colors, axis=0) if all_colors else None
     ), consolidated
 
-
-def panoramic_depth_to_pcd(
-    depth: np.ndarray,
-    image: Optional[np.ndarray] = None,
-    v_fov_deg: float = None,
-    max_depth_mult: float = 5.0,
-) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-    """Converts a panoramic depth map to a point cloud."""
-    h, w = depth.shape
-    if v_fov_deg is None:
-        theta_start, theta_end = 0.0, np.pi
-    else:
-        v_fov_rad = np.radians(v_fov_deg)
-        theta_start, theta_end = (np.pi / 2.0) - (v_fov_rad / 2.0), (np.pi / 2.0) + (
-            v_fov_rad / 2.0
-        )
-
-    theta = np.linspace(theta_start, theta_end, h)
-    theta_grid = np.repeat(theta.reshape(h, 1), w, axis=1)
-    phi = np.linspace(-np.pi, np.pi, w)
-    phi_grid = np.repeat(phi.reshape(1, w), h, axis=0)
-
-    x = depth * np.sin(theta_grid) * np.sin(phi_grid)
-    y = depth * np.cos(theta_grid)
-    z = depth * np.sin(theta_grid) * np.cos(phi_grid)
-    points = np.stack([x.flatten(), y.flatten(), z.flatten()], axis=1)
-
-    colors_filtered = None
-    if image is not None:
-        img_resized = cv2.resize(image, (w, h), interpolation=cv2.INTER_AREA)
-        img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-        colors_filtered = img_rgb.reshape(-1, 3) / 255.0
-
-    d_flat = depth.flatten()
-    valid_mask = d_flat > 1e-3
-    if np.any(valid_mask):
-        mask = valid_mask & (d_flat < (np.median(d_flat[valid_mask]) * max_depth_mult))
-    else:
-        mask = valid_mask
-
-    return points[mask], (
-        colors_filtered[mask] if colors_filtered is not None else None
-    )
 
 
 def project_world_cloud_to_view(
