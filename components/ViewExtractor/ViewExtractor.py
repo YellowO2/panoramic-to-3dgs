@@ -95,7 +95,7 @@ HFOV = 90.0  # Fixed FOV for DA3 slices
 def extract_views_for_da3(
     input_image, output_dir, step_degrees=20, prefix="", pano_id=0
 ) -> list[View]:
-    """Extracts 16:9 horizon-only views optimized for Depth Anything 3."""
+    """Extracts views for Depth Anything 3: 16:9 horizon slices + downward views."""
     equ = E2P.Equirectangular(input_image)
     pano_w = equ._img.shape[1]
 
@@ -103,20 +103,30 @@ def extract_views_for_da3(
     slice_h = int(slice_w * 9 / 16)
 
     views = []
+
+    # Horizon views (pitch=0)
     yaw = 0.0
     while yaw < 360.0:
         filename = f"{prefix}da3_{int(round(yaw))}_0.jpg"
         views.append(
-            _extract_slice(
-                equ,
-                yaw,
-                0,
-                HFOV,
-                slice_w,
-                slice_h,
-                os.path.join(output_dir, filename),
-                pano_id,
-            )
+            _extract_slice(equ, yaw, 0, HFOV, slice_w, slice_h,
+                           os.path.join(output_dir, filename), pano_id)
         )
         yaw += step_degrees
+
+    # Downward views at coarser yaw spacing
+    for yaw in [0.0, 90.0, 180.0, 270.0]:
+        for pitch in [-30.0, -60.0]:
+            filename = f"{prefix}da3_{int(yaw)}_{int(pitch)}.jpg"
+            views.append(
+                _extract_slice(equ, yaw, pitch, HFOV, slice_w, slice_h,
+                               os.path.join(output_dir, filename), pano_id)
+            )
+
+    # Floor view
+    views.append(
+        _extract_slice(equ, 0, -90, HFOV, slice_w, slice_w,
+                       os.path.join(output_dir, f"{prefix}da3_0_-90.jpg"), pano_id)
+    )
+
     return views
