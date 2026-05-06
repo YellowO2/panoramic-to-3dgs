@@ -10,7 +10,6 @@ from components.SplatGenerator.SplatGenerator import SplatGenerator
 from components.DepthMapGenerator.DA360DepthModel import DA360DepthModel
 from components.DepthMapGenerator.DA3Model import DA3Model
 from components.SplatProcessor.SplatProcessor import SplatProcessor
-from components.ImageCleaner.ImageCleaner import ImageCleaner
 from components.ViewExtractor.ViewExtractor import extract_views, extract_views_for_da3
 from components.Saver.Saver import Saver
 from components.SplatProcessor.utils import backproject_views_to_pcd
@@ -86,6 +85,7 @@ class Pipeline:
                 print(f"--- Processing Panorama {i+1}: {pano_path} ---")
                 current_image = pano_path
                 if cfg.clean_image:
+                    from components.ImageCleaner.ImageCleaner import ImageCleaner
                     cleaner = ImageCleaner()
                     cleaned_path = os.path.join(output_dir, f"cleaned_pano_{i}.png")
                     cleaner.clean(current_image, output_path=cleaned_path)
