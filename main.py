@@ -196,7 +196,7 @@ if __name__ == "__main__":
     }
 
     # --- Option A: folder input ---
-    panos, depths, meta = load_panorama_folder("data/inputs/panoramas_example")
+    # panos, depths, meta = load_panorama_folder("data/inputs/panoramas_example")
     # run_panoramic_pipeline(
     #     panorama_paths=panos,
     #     output_dir="data/outputs/folder_test",
@@ -210,10 +210,11 @@ if __name__ == "__main__":
         # "data/inputs/round2.jpg",
         # "data/inputs/round3_2.jpg",
         # "data/inputs/round_4.jpg",
+        "data/inputs/panoramas_sea_view/pano_rTCgvONHkRFIqvygt6llLA.jpg"
     ]
     run_panoramic_pipeline(
         panorama_paths=panos,
         output_dir="data/outputs/multi_pano_test",
-        depth_mode="da3",
+        depth_mode="da360",
         model_paths=models,
     )

@@ -69,7 +69,7 @@ class DA360DepthModel:
         image: Optional[np.ndarray] = None,
         v_fov_deg: float = None,
         max_depth_mult: float = 4.0,
-        max_pts: int = 1_000_000,
+        max_pts: int = 6_000_000,
     ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         """Backproject an equirectangular depth map to a 3D point cloud."""
         h, w = depth.shape
