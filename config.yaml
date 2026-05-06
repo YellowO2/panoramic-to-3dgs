@@ -1,0 +1,30 @@
+models:
+  sharp: models/sharp_2572gikvuh.pt
+  da3: models/models--depth-anything--DA3NESTED-GIANT-LARGE-1.1/snapshots/b2359bdf726fb44ef62acca04d629dcf158053e7
+  da360: models/DA360_large.pth
+
+pipeline:
+  depth_mode: da3   # depth source: da3 (metric, multi-view) | da360 (relative, single-pano) | null (no alignment)
+  scale_mode: da3_2dgrid_global
+  # scale_mode options:
+  #   near_edge          — match nearest-Z edge across slices, no depth model required
+  #   da3_per_point      — per-Voronoi-cell scale
+  #   da3_zslab          — scale by depth band (Z slabs)
+  #   da3_zslab_global   — da3_zslab using points from all panos combined
+  #   da3_2dgrid         — scale by 2D grid (depth × FOV angle)
+  #   da3_2dgrid_global  — da3_2dgrid using points from all panos combined (recommended)
+  #   da3_y_ground       — uniform scale based on estimated ground elevation
+  clean_image: false   # run inpainting to remove people before processing
+  slice_count: 6       # number of perspective slices SHARP generates per panorama
+
+processor:
+  align_depth: 10.0      # splats closer than this (metres) are scale-aligned to depth reference
+  near_depth: 48.0       # splats between align_depth and near_depth are kept but not aligned
+  sky_depth: 50.0        # splats between near_depth and sky_depth are dropped (noisy zone)
+  num_z_slabs: 500       # number of depth bands for zslab/2dgrid alignment
+  num_fov_slabs: 250     # number of FOV angle bands for 2dgrid alignment
+  smooth_sigma_m: 0.5    # spatial smoothing of scale field along depth axis (metres)
+  smooth_sigma_fov: 0.15 # spatial smoothing of scale field along FOV axis (fraction of FOV)
+  voronoi_buffer_m: 1.5  # overlap buffer between panos before Voronoi trim (metres)
+  floor_keep_fraction: 0.6  # fraction of floor-view Gaussians to keep after subsampling
+  min_depth_coverage: 1.0   # minimum depth point coverage required to attempt alignment
