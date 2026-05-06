@@ -15,6 +15,7 @@ class PipelineConfig:
     scale_mode: str = "da3_2dgrid_global"
     clean_image: bool = False
     slice_count: int = 6
+    debug: bool = False  # save intermediate view slices and debug PCDs
 
     # SplatProcessor
     align_depth: float = 10.0
@@ -43,6 +44,7 @@ class PipelineConfig:
             scale_mode=pipeline.get("scale_mode", "da3_2dgrid_global"),
             clean_image=pipeline.get("clean_image", False),
             slice_count=pipeline.get("slice_count", 6),
+            debug=pipeline.get("debug", False),
             align_depth=processor.get("align_depth", 10.0),
             near_depth=processor.get("near_depth", 48.0),
             sky_depth=processor.get("sky_depth", 50.0),
