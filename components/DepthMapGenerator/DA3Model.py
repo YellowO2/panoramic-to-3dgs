@@ -1,4 +1,3 @@
-import torch
 import numpy as np
 from scipy.spatial.transform import Rotation
 from depth_anything_3.api import DepthAnything3
@@ -15,40 +14,15 @@ class DA3Model:
         print(f"Loading Depth Anything 3 model from '{model_path}' on {device}...")
         self.model = DepthAnything3.from_pretrained(model_path).to(device=device)
 
-    def _build_intrinsics(self, views: list[View]) -> np.ndarray:
-        K = np.zeros((len(views), 3, 3))
-        for i, v in enumerate(views):
-            K[i] = [[v.focal_px, 0, v.width / 2],
-                     [0, v.focal_px, v.height / 2],
-                     [0, 0, 1]]
-        return K
-
-    def _build_extrinsics(self, views: list[View]) -> np.ndarray:
-        ext = np.zeros((len(views), 4, 4))
-        for i, v in enumerate(views):
-            R_local = Rotation.from_euler('yx', [v.yaw, v.pitch], degrees=True).as_matrix()
-            ext[i, :3, :3] = R_local.T  # R_w2c
-            ext[i, 3, 3] = 1.0          # t = [0,0,0], all views at same position
-        return ext
-
     def process_views(self, views: list[View], dist_thresh=0.2, angle_thresh=1):
         """
         Runs multi-view inference, filters out views that deviate from expected
-        Shared Center and Yaw/Pitch values, and returns the cleaned result.
+        shared center and yaw/pitch values, and returns the cleaned result.
         """
         if not views: return [], DA3Result({}, None)
 
-        intrinsics = self._build_intrinsics(views)
-        pano_ids = {v.pano_id for v in views}
-        # Provide known extrinsics only for single-pano (all views at same position).
-        # Multi-pano views have different centers — let DA3 estimate poses freely.
-        extrinsics = self._build_extrinsics(views) if len(pano_ids) == 1 else None
-
         prediction = self.model.inference(
             [v.path for v in views],
-            extrinsics=extrinsics,
-            intrinsics=intrinsics,
-            align_to_input_ext_scale=False,
             export_format="mini_npz",
         )
         
