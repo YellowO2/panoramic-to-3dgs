@@ -91,7 +91,7 @@ class DA360DepthModel:
         phi_grid = np.repeat(phi.reshape(1, w), h, axis=0)
 
         x = depth * np.sin(theta_grid) * np.sin(phi_grid)
-        y = depth * np.cos(theta_grid)
+        y = -depth * np.cos(theta_grid)  # negate: theta=0 (top) → y=-depth (up = negative in Y-down)
         z = depth * np.sin(theta_grid) * np.cos(phi_grid)
         points = np.stack([x.flatten(), y.flatten(), z.flatten()], axis=1)
 
