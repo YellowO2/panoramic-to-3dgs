@@ -39,8 +39,9 @@ def extract_views(
     prefix="",
     panorama_depth=None,
     pano_id=0,
+    include_sky=False,
 ) -> list[View]:
-    """Extracts standard views for SHARP: horizon slices + top/bottom poles."""
+    """Extracts standard views for SHARP: horizon slices + floor (and optional sky) pole."""
     equ = E2P.Equirectangular(input_image)
     depth_equ = (
         E2P.Equirectangular(panorama_depth) if panorama_depth is not None else None
@@ -70,9 +71,6 @@ def extract_views(
         )
 
     pole_size = slice_w
-    # generate bottom (ground) view only; sky omitted
-    # views.append(_extract_slice(equ, 0,  90, 60.0, pole_size, pole_size,
-    #                             os.path.join(output_dir, f"{prefix}sharp_0_90.jpg"), pano_id, depth_equ))
     views.append(
         _extract_slice(
             equ,
@@ -86,6 +84,20 @@ def extract_views(
             depth_equ,
         )
     )
+    if include_sky:
+        views.append(
+            _extract_slice(
+                equ,
+                0,
+                90,
+                60.0,
+                pole_size,
+                pole_size,
+                os.path.join(output_dir, f"{prefix}sharp_0_90.jpg"),
+                pano_id,
+                depth_equ,
+            )
+        )
     return views
 
 

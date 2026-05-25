@@ -116,6 +116,7 @@ class Pipeline:
                         prefix=f"pano_{i}_",
                         panorama_depth=None,
                         pano_id=i,
+                        include_sky=cfg.include_sky,
                     )
                 )
 

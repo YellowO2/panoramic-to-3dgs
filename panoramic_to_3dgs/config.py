@@ -15,6 +15,7 @@ class PipelineConfig:
     scale_mode: str = "da3_2dgrid_global"
     clean_image: bool = False
     slice_count: int = 6
+    include_sky: bool = False  # include an upward (+90° pitch) SHARP view
     debug: bool = False  # save intermediate view slices and debug PCDs
 
     # SplatProcessor
@@ -44,6 +45,7 @@ class PipelineConfig:
             scale_mode=pipeline.get("scale_mode", "da3_2dgrid_global"),
             clean_image=pipeline.get("clean_image", False),
             slice_count=pipeline.get("slice_count", 6),
+            include_sky=pipeline.get("include_sky", False),
             debug=pipeline.get("debug", False),
             align_depth=processor.get("align_depth", 10.0),
             near_depth=processor.get("near_depth", 48.0),

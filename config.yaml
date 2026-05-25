@@ -16,6 +16,7 @@ pipeline:
   #   da3_y_ground       — uniform scale based on estimated ground elevation
   clean_image: false   # run inpainting to remove people before processing
   slice_count: 4       # number of perspective slices SHARP generates per panorama
+  include_sky: false   # include an upward (+90° pitch) SHARP view in addition to horizon + floor
   debug: false         # save intermediate view slices and debug point clouds (useful when tuning)
 
 processor:
