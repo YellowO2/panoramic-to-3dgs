@@ -186,6 +186,29 @@ class SplatProcessor:
             R_c2w = pano_rot.T @ R_local if pano_rot is not None else R_local
             view_poses.append((R_local, center, pano_rot, R_c2w))
 
+        # y_ground produces one uniform scalar per slice; it must scale the WHOLE
+        # slice rigidly. Apply before split_depth_zones so keep/sky zones ride the
+        # same scalar instead of staying at SHARP raw scale (which would create a
+        # discontinuity at radial=align_depth). Grid/zslab modes are per-region,
+        # so they correctly apply only to the trimmed zone after the split.
+        if scale_mode == "da3_y_ground":
+            print(f"--- Scale mode: {scale_mode} (pre-split uniform scaling) ---")
+            for i, (view, splat) in enumerate(zip(views, splats_list)):
+                pano_data = pano_poses.get(view.pano_id) if pano_poses else None
+                if pano_data is None:
+                    continue
+                pts = (
+                    da3_world_pts.get(view.pano_id)
+                    if isinstance(da3_world_pts, dict)
+                    else None
+                )
+                if pts is None:
+                    continue
+                pts_cam = (pano_data["rotation"] @ (pts - pano_data["center"]).T).T
+                da3_elev = elevation_estimate(pts_cam[:, 1], pts_cam[:, 2])
+                if da3_elev is not None and da3_elev > 1e-6:
+                    splats_list[i] = align_da3_y_ground(splat, da3_elev)
+
         # Step 1: single-pass split into three zones.
         #   trimmed     : ≤ align_depth            — used for DA3 scale alignment
         #   keep_splats : align_depth → near_depth — kept but skips alignment
@@ -233,23 +256,6 @@ class SplatProcessor:
                         splat, view, pano_poses, da3_world_pts
                     )
 
-        elif scale_mode == "da3_y_ground":
-            for i, (view, splat) in enumerate(zip(views, trimmed)):
-                pano_data = pano_poses.get(view.pano_id) if pano_poses else None
-                if pano_data is None:
-                    continue
-                pts = (
-                    da3_world_pts.get(view.pano_id)
-                    if isinstance(da3_world_pts, dict)
-                    else None
-                )
-                if pts is None:
-                    continue
-                pts_cam = (pano_data["rotation"] @ (pts - pano_data["center"]).T).T
-                da3_elev = elevation_estimate(pts_cam[:, 1], pts_cam[:, 2])
-                if da3_elev is not None and da3_elev > 1e-6:
-                    trimmed[i] = align_da3_y_ground(splat, da3_elev)
-
         # Step 2b: floor alignment (-90° pitch), always applied when global DA3 pts are available
         if all_da3_pts is not None:
             for i, (view, splat) in enumerate(zip(views, trimmed)):
@@ -259,13 +265,16 @@ class SplatProcessor:
                 if center is None:
                     continue
                 print(f"--- Floor alignment: pano {view.pano_id} ---")
+                # max_depth bounded independent of align_depth: floor plane fit only
+                # makes sense over a short downward range. Large values let far non-floor
+                # points dominate the LSQ plane fit and warp the result.
                 trimmed[i] = align_floor_view(
                     splat,
                     view,
                     all_da3_pts,
                     center,
                     R_c2w,
-                    max_depth=self.align_depth,
+                    max_depth=10.0,
                     smooth_sigma_frac=self.smooth_sigma_fov,
                 )
 
