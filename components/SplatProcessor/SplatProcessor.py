@@ -25,8 +25,8 @@ from components.SplatProcessor.alignment import (
     align_da3_2dgrid,
     align_da3_y_ground,
     align_floor_view,
-    da3_elev_in_view,
-    da3_elev_at_seam,
+    da3_floor_elevation,
+    elevation_estimate,
 )
 
 
@@ -84,7 +84,9 @@ class SplatProcessor:
         )
         if pts is None:
             return splat
-        da3_elev = da3_elev_in_view(pts, pano_data["center"], R_c2w, view)
+        # Slice-camera frame: Y is reliably down for pitch=0 views.
+        pts_cam = (R_c2w.T @ (pts - pano_data["center"]).T).T
+        da3_elev = elevation_estimate(pts_cam[:, 1], pts_cam[:, 2])
         if da3_elev is not None and da3_elev > 1e-6:
             print(
                 f"  [Fallback] yaw={view.yaw:.0f}° sparse depth → y_ground (elev={da3_elev:.3f})"
@@ -186,6 +188,14 @@ class SplatProcessor:
             R_c2w = pano_rot.T @ R_local if pano_rot is not None else R_local
             view_poses.append((R_local, center, pano_rot, R_c2w))
 
+        # Pre-compute global DA3 cloud (used by floor alignment and y_ground).
+        all_da3_pts = None
+        if isinstance(da3_world_pts, dict):
+            parts = [pts for pts in da3_world_pts.values() if pts is not None]
+            all_da3_pts = np.concatenate(parts, axis=0) if parts else None
+        elif da3_world_pts is not None:
+            all_da3_pts = da3_world_pts
+
         # y_ground produces one uniform scalar per slice; it must scale the WHOLE
         # slice rigidly. Apply before split_depth_zones so keep/sky zones ride the
         # same scalar instead of staying at SHARP raw scale (which would create a
@@ -193,43 +203,34 @@ class SplatProcessor:
         # so they correctly apply only to the trimmed zone after the split.
         if scale_mode == "da3_y_ground":
             print(f"--- Scale mode: {scale_mode} (pre-split uniform scaling) ---")
-            # Per-pano floor view info: needed to define the seam disc each slice scales to.
-            floor_view_info = {}
-            for j, v in enumerate(views):
-                if v.pitch == -90:
-                    floor_view_info[v.pano_id] = (v, view_poses[j][3])
-            # Use the full multi-pano DA3 cloud — pano 0's own cloud often has no points
-            # under itself (its horizontal cameras don't observe directly downward); the
-            # floor disc is filled by neighbour panos. align_floor_view does the same.
-            if isinstance(da3_world_pts, dict):
-                parts = [pts for pts in da3_world_pts.values() if pts is not None]
-                pre_all_da3_pts = np.concatenate(parts, axis=0) if parts else None
-            else:
-                pre_all_da3_pts = da3_world_pts
+            # Per-pano DA3 floor elevation, from each pano's pitch=-90 view.
+            # Uses the same concatenated cloud as align_floor_view so the y_ground
+            # target matches the floor's target exactly.
+            pano_floor_elev: dict = {}
+            if all_da3_pts is not None:
+                for i, view in enumerate(views):
+                    if view.pitch != -90:
+                        continue
+                    _, center, _, R_c2w = view_poses[i]
+                    if center is None:
+                        print(f"  [Y-ground] pano {view.pano_id} floor view has no center, skip")
+                        continue
+                    elev = da3_floor_elevation(view, center, R_c2w, all_da3_pts)
+                    if elev is None or elev <= 1e-6:
+                        print(f"  [Y-ground] pano {view.pano_id} da3_floor_elevation returned {elev}")
+                        continue
+                    pano_floor_elev[view.pano_id] = elev
+                    print(f"  [Y-ground] pano {view.pano_id} DA3 floor elev: {elev:.4f}")
+
             for i, (view, splat) in enumerate(zip(views, splats_list)):
-                # Skip sky (+90, no ground) and floor (-90, handled by align_floor_view).
                 if view.pitch in (90, -90):
                     print(f"  [Y-ground] yaw={view.yaw:+.0f}° pitch={view.pitch:+.0f}° skipped")
                     continue
-                pano_data = pano_poses.get(view.pano_id) if pano_poses else None
-                if pano_data is None:
-                    print(f"  [Y-ground] yaw={view.yaw:+.0f}° no pano_data, skipping")
+                da3_elev = pano_floor_elev.get(view.pano_id)
+                if da3_elev is None:
+                    print(f"  [Y-ground] yaw={view.yaw:+.0f}° pitch={view.pitch:+.0f}° no floor elev for pano {view.pano_id}, skip")
                     continue
-                if pre_all_da3_pts is None:
-                    print(f"  [Y-ground] yaw={view.yaw:+.0f}° no da3 pts, skipping")
-                    continue
-                floor_data = floor_view_info.get(view.pano_id)
-                if floor_data is None:
-                    print(f"  [Y-ground] yaw={view.yaw:+.0f}° no floor view, skipping")
-                    continue
-                floor_view, floor_R_c2w = floor_data
-                _, _, _, slice_R_c2w = view_poses[i]
-                # Seam-anchored elevation: outer ring of floor view's DA3 disc in this slice's wedge.
-                da3_elev = da3_elev_at_seam(
-                    pre_all_da3_pts, pano_data["center"], floor_view, floor_R_c2w, view, slice_R_c2w
-                )
-                if da3_elev is not None and da3_elev > 1e-6:
-                    splats_list[i] = align_da3_y_ground(splat, da3_elev)
+                splats_list[i] = align_da3_y_ground(splat, da3_elev)
 
         # Step 1: single-pass split into three zones.
         #   trimmed     : ≤ align_depth            — used for DA3 scale alignment
@@ -243,14 +244,6 @@ class SplatProcessor:
         trimmed = [z[0] for z in zones]
         keep_splats = [z[1] for z in zones]
         sky_splats = [z[2] for z in zones]
-
-        # Pre-compute global DA3 cloud (used by floor alignment regardless of scale_mode)
-        all_da3_pts = None
-        if isinstance(da3_world_pts, dict):
-            parts = [pts for pts in da3_world_pts.values() if pts is not None]
-            all_da3_pts = np.concatenate(parts, axis=0) if parts else None
-        elif da3_world_pts is not None:
-            all_da3_pts = da3_world_pts
 
         # Step 2: scale alignment (near geometry only — trimmed contains no sky)
         print(f"--- Scale mode: {scale_mode} ---")
