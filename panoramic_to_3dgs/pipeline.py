@@ -210,14 +210,15 @@ class Pipeline:
         )
         print(f"Pipeline complete: {final_path}")
 
-        for pid, splat in per_pano_splats.items():
-            pano_out = os.path.join(output_dir, f"output_pano_{pid}.ply")
-            save_ply(
-                splat,
-                f_px=ref_view.focal_px,
-                image_shape=(ref_view.height, ref_view.width),
-                path=pano_out,
-            )
-            print(f"Saved pano {pid}: {pano_out}")
+        if debug:
+            for pid, splat in per_pano_splats.items():
+                pano_out = os.path.join(output_dir, f"output_pano_{pid}.ply")
+                save_ply(
+                    splat,
+                    f_px=ref_view.focal_px,
+                    image_shape=(ref_view.height, ref_view.width),
+                    path=pano_out,
+                )
+                print(f"Saved pano {pid}: {pano_out}")
 
         return merged_splat, per_pano_splats

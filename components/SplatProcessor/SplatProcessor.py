@@ -25,7 +25,8 @@ from components.SplatProcessor.alignment import (
     align_da3_2dgrid,
     align_da3_y_ground,
     align_floor_view,
-    elevation_estimate,
+    da3_elev_in_view,
+    da3_elev_at_seam,
 )
 
 
@@ -71,7 +72,7 @@ class SplatProcessor:
         return n_valid >= min_required
 
     def _try_yground_fallback(
-        self, splat, view, pano_poses, da3_world_pts
+        self, splat, view, pano_poses, da3_world_pts, R_c2w
     ) -> Gaussians3D:
         pano_data = pano_poses.get(view.pano_id) if pano_poses else None
         if pano_data is None:
@@ -83,8 +84,7 @@ class SplatProcessor:
         )
         if pts is None:
             return splat
-        pts_cam = (pano_data["rotation"] @ (pts - pano_data["center"]).T).T
-        da3_elev = elevation_estimate(pts_cam[:, 1], pts_cam[:, 2])
+        da3_elev = da3_elev_in_view(pts, pano_data["center"], R_c2w, view)
         if da3_elev is not None and da3_elev > 1e-6:
             print(
                 f"  [Fallback] yaw={view.yaw:.0f}° sparse depth → y_ground (elev={da3_elev:.3f})"
@@ -193,19 +193,41 @@ class SplatProcessor:
         # so they correctly apply only to the trimmed zone after the split.
         if scale_mode == "da3_y_ground":
             print(f"--- Scale mode: {scale_mode} (pre-split uniform scaling) ---")
+            # Per-pano floor view info: needed to define the seam disc each slice scales to.
+            floor_view_info = {}
+            for j, v in enumerate(views):
+                if v.pitch == -90:
+                    floor_view_info[v.pano_id] = (v, view_poses[j][3])
+            # Use the full multi-pano DA3 cloud — pano 0's own cloud often has no points
+            # under itself (its horizontal cameras don't observe directly downward); the
+            # floor disc is filled by neighbour panos. align_floor_view does the same.
+            if isinstance(da3_world_pts, dict):
+                parts = [pts for pts in da3_world_pts.values() if pts is not None]
+                pre_all_da3_pts = np.concatenate(parts, axis=0) if parts else None
+            else:
+                pre_all_da3_pts = da3_world_pts
             for i, (view, splat) in enumerate(zip(views, splats_list)):
+                # Skip sky (+90, no ground) and floor (-90, handled by align_floor_view).
+                if view.pitch in (90, -90):
+                    print(f"  [Y-ground] yaw={view.yaw:+.0f}° pitch={view.pitch:+.0f}° skipped")
+                    continue
                 pano_data = pano_poses.get(view.pano_id) if pano_poses else None
                 if pano_data is None:
+                    print(f"  [Y-ground] yaw={view.yaw:+.0f}° no pano_data, skipping")
                     continue
-                pts = (
-                    da3_world_pts.get(view.pano_id)
-                    if isinstance(da3_world_pts, dict)
-                    else None
+                if pre_all_da3_pts is None:
+                    print(f"  [Y-ground] yaw={view.yaw:+.0f}° no da3 pts, skipping")
+                    continue
+                floor_data = floor_view_info.get(view.pano_id)
+                if floor_data is None:
+                    print(f"  [Y-ground] yaw={view.yaw:+.0f}° no floor view, skipping")
+                    continue
+                floor_view, floor_R_c2w = floor_data
+                _, _, _, slice_R_c2w = view_poses[i]
+                # Seam-anchored elevation: outer ring of floor view's DA3 disc in this slice's wedge.
+                da3_elev = da3_elev_at_seam(
+                    pre_all_da3_pts, pano_data["center"], floor_view, floor_R_c2w, view, slice_R_c2w
                 )
-                if pts is None:
-                    continue
-                pts_cam = (pano_data["rotation"] @ (pts - pano_data["center"]).T).T
-                da3_elev = elevation_estimate(pts_cam[:, 1], pts_cam[:, 2])
                 if da3_elev is not None and da3_elev > 1e-6:
                     splats_list[i] = align_da3_y_ground(splat, da3_elev)
 
@@ -253,7 +275,7 @@ class SplatProcessor:
                     trimmed[i] = self._align_splat(splat, ref_depth, view, scale_mode)
                 else:
                     trimmed[i] = self._try_yground_fallback(
-                        splat, view, pano_poses, da3_world_pts
+                        splat, view, pano_poses, da3_world_pts, R_c2w
                     )
 
         # Step 2b: floor alignment (-90° pitch), always applied when global DA3 pts are available

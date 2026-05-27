@@ -32,6 +32,116 @@ def elevation_estimate(y_values: np.ndarray, z_values: np.ndarray, z_percentile:
     return float(np.percentile(y_values[close], 99))
 
 
+def da3_elev_in_view(
+    da3_world_pts: np.ndarray,
+    center: np.ndarray,
+    R_c2w: np.ndarray,
+    view,
+) -> float | None:
+    """DA3 ground elevation restricted to a slice's FOV, mirroring SHARP's elevation_estimate.
+
+    Transforms DA3 cloud to slice camera frame, keeps only points that project inside the
+    image rectangle (FOV cone), then runs elevation_estimate. This makes DA3 and SHARP
+    measurements apples-to-apples: same algorithm on FOV-restricted point sets.
+    """
+    pts_cam = (R_c2w.T @ (da3_world_pts - center).T).T
+    X, Y, Z = pts_cam[:, 0], pts_cam[:, 1], pts_cam[:, 2]
+    fx = fy = float(view.focal_px)
+    w, h = int(view.width), int(view.height)
+    cx, cy = w / 2.0, h / 2.0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        px = fx * X / Z + cx
+        py = fy * Y / Z + cy
+    in_fov = (Z > 0) & (px >= 0) & (px < w) & (py >= 0) & (py < h)
+    if in_fov.sum() < 4:
+        return None
+    return elevation_estimate(Y[in_fov], Z[in_fov])
+
+
+def da3_elev_at_seam(
+    da3_world_pts: np.ndarray,
+    center: np.ndarray,
+    floor_view,
+    floor_R_c2w: np.ndarray,
+    slice_view,
+    slice_R_c2w: np.ndarray,
+    floor_max_depth: float = 15.0,
+    edge_fraction: float = 0.05,
+) -> float | None:
+    """Elevation at the floor↔slice seam, from the outer ring of the floor view's DA3 disc.
+
+    1. Project DA3 into floor view → sparse depth map (same path align_floor_view uses).
+    2. Unproject pixels back to 3D in floor camera frame.
+    3. Cut to the angular wedge matching the slice's yaw direction.
+    4. Take outermost `edge_fraction` of that wedge by horizontal distance (the seam ring).
+    5. Compute their Y in the slice's camera frame; 99th percentile = floor elevation.
+    """
+    # 1. Project to floor view's depth map (reuses validated projection logic)
+    print(
+        f"  [Seam debug] yaw={slice_view.yaw:+.0f}° "
+        f"pts type={type(da3_world_pts).__name__} "
+        f"shape={getattr(da3_world_pts, 'shape', 'NA')} "
+        f"center={np.asarray(center).ravel()[:3]} "
+        f"floor_R_c2w.shape={floor_R_c2w.shape} "
+        f"floor_view.focal_px={floor_view.focal_px} "
+        f"floor_view.w/h={floor_view.width}/{floor_view.height}"
+    )
+    sparse_depth = project_world_cloud_to_view(
+        da3_world_pts, center, floor_R_c2w, floor_view, max_depth=floor_max_depth
+    )
+    valid = sparse_depth > 0
+    print(
+        f"  [Seam debug] sparse_depth.shape={sparse_depth.shape} "
+        f"valid={int(valid.sum())} "
+        f"depth_range=[{float(sparse_depth[valid].min()) if valid.any() else 'NA'}, "
+        f"{float(sparse_depth[valid].max()) if valid.any() else 'NA'}]"
+    )
+    if int(valid.sum()) < 20:
+        print(f"  [Seam] yaw={slice_view.yaw:+.0f}° too few points in floor disc ({int(valid.sum())})")
+        return None
+
+    # 2. Unproject valid pixels → 3D positions in floor camera frame
+    h, w = sparse_depth.shape
+    fx = fy = float(floor_view.focal_px)
+    cx, cy = w / 2.0, h / 2.0
+    py_grid, px_grid = np.indices(sparse_depth.shape)
+    Zf = sparse_depth[valid].astype(np.float32)
+    Xf = (px_grid[valid].astype(np.float32) - cx) * Zf / fx
+    Yf = (py_grid[valid].astype(np.float32) - cy) * Zf / fy
+
+    # 3. Angular wedge: slice's forward axis in floor cam frame defines wedge direction
+    slice_fwd_floor = floor_R_c2w.T @ slice_R_c2w[:, 2]
+    target_angle = float(np.arctan2(slice_fwd_floor[1], slice_fwd_floor[0]))
+    point_angles = np.arctan2(Yf, Xf)
+    angle_diff = np.abs(
+        np.arctan2(np.sin(point_angles - target_angle), np.cos(point_angles - target_angle))
+    )
+    half_fov_rad = math.radians(slice_view.hfov / 2.0)
+    in_wedge = angle_diff <= half_fov_rad
+    if int(in_wedge.sum()) < 20:
+        print(f"  [Seam] yaw={slice_view.yaw:+.0f}° too few points in wedge ({int(in_wedge.sum())})")
+        return None
+
+    # 4. Outermost edge_fraction by horizontal distance from camera
+    horiz_r = np.sqrt(Xf ** 2 + Yf ** 2)
+    thresh = float(np.percentile(horiz_r[in_wedge], 100 * (1 - edge_fraction)))
+    edge_mask = in_wedge & (horiz_r >= thresh)
+    if int(edge_mask.sum()) < 4:
+        print(f"  [Seam] yaw={slice_view.yaw:+.0f}° too few edge points ({int(edge_mask.sum())})")
+        return None
+
+    # 5. Transform edge points to slice cam frame, take Y-99pct (Y-down → ground)
+    edge_floor = np.stack([Xf[edge_mask], Yf[edge_mask], Zf[edge_mask]], axis=1)
+    # floor_cam → world → slice_cam
+    edge_world = (floor_R_c2w @ edge_floor.T).T + center
+    edge_slice = (slice_R_c2w.T @ (edge_world - center).T).T
+    print(
+        f"  [Seam] yaw={slice_view.yaw:+.0f}° "
+        f"floor-disc:{int(valid.sum())} wedge:{int(in_wedge.sum())} edge:{int(edge_mask.sum())}"
+    )
+    return float(np.percentile(edge_slice[:, 1], 99))
+
+
 def _voronoi_common(gaussians, reference_depth, focal_x_px, focal_y_px, image_width, image_height):
     """Shared Voronoi grid setup for DA3 alignment. Returns context dict or None on failure."""
     da3_v_full, da3_u_full = np.where(reference_depth > 0)
@@ -524,6 +634,13 @@ def align_floor_view(
     smooth_sigma_frac: float = 0.15,
 ) -> Gaussians3D:
     """Floor (-90°) alignment: project global DA3 cloud, plane-fill sparse depth, spatial px×py grid scale."""
+    print(
+        f"  [Floor debug] pts type={type(all_da3_pts).__name__} "
+        f"shape={getattr(all_da3_pts, 'shape', 'NA')} "
+        f"center={np.asarray(center).ravel()[:3]} "
+        f"R_c2w.shape={R_c2w.shape} "
+        f"view.focal_px={view.focal_px} view.w/h={view.width}/{view.height}"
+    )
     sparse_depth = project_world_cloud_to_view(
         all_da3_pts, center, R_c2w, view, max_depth=max_depth * 1.5
     )
@@ -535,9 +652,24 @@ def align_floor_view(
         print("  [Floor] Too few DA3 pts for plane fill, trying elevation fallback...")
         return _floor_elevation_fallback(gaussians, all_da3_pts, center, R_c2w, view)
 
-    return _align_floor_spatial_grid(
+    # For a -90 pitch view, depth-to-floor ≈ camera elevation above floor.
+    # This should match the da3_elev printed by align_da3_y_ground for non-floor slices.
+    da3_floor_dist = float(np.median(filled_depth))
+    print(f"  [Floor] DA3 floor distance (median filled depth): {da3_floor_dist:.4f}")
+
+    # SHARP-side equivalent: median depth of the floor splat's Gaussians (pre-scaling).
+    mv_pre = gaussians.mean_vectors[0].detach().cpu().numpy()
+    sharp_floor_dist_pre = float(np.median(mv_pre[:, 2][mv_pre[:, 2] > 0])) if (mv_pre[:, 2] > 0).any() else float("nan")
+    print(f"  [Floor] SHARP floor distance pre-scale (median Z): {sharp_floor_dist_pre:.4f}")
+
+    aligned = _align_floor_spatial_grid(
         gaussians, filled_depth,
         view.focal_px, view.focal_px,
         int(view.width), int(view.height),
         grid_size, smooth_sigma_frac,
     )
+
+    mv_post = aligned.mean_vectors[0].detach().cpu().numpy()
+    sharp_floor_dist_post = float(np.median(mv_post[:, 2][mv_post[:, 2] > 0])) if (mv_post[:, 2] > 0).any() else float("nan")
+    print(f"  [Floor] SHARP floor distance post-scale (median Z): {sharp_floor_dist_post:.4f}")
+    return aligned

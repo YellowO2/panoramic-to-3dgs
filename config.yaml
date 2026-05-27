@@ -5,7 +5,7 @@ models:
 
 pipeline:
   depth_mode: da3   # depth source: da3 (metric, multi-view) | da360 (relative, single-pano) | null (no alignment)
-  scale_mode: da3_2dgrid_global
+  scale_mode: da3_y_ground  # scale method (see options below)
   # scale_mode options:
   #   near_edge          — match nearest-Z edge across slices, no depth model required
   #   da3_per_point      — per-Voronoi-cell scale
