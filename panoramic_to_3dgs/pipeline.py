@@ -67,6 +67,7 @@ class Pipeline:
         all_da3_views = []
         pano_poses = None
         da3_pts_per_pano = None
+        n_da3_clean = None
 
         da360_model = None
         if cfg.depth_mode == "da360":
@@ -160,6 +161,7 @@ class Pipeline:
                             pts, os.path.join(output_dir, f"da3_debug_pano_{pid}.ply")
                         )
 
+                n_da3_clean = len(filtered_da3_views)
                 del da3, da3_result, filtered_da3_views, da3_cols, da3_pts
                 torch.cuda.empty_cache()
 
@@ -175,6 +177,8 @@ class Pipeline:
             gs_generator = SplatGenerator(cfg.sharp_model)
             splat_out_dir = os.path.join(output_dir, "gs") if debug else None
             gaussian_list = gs_generator.generate_from_views(all_sharp_views, output_dir=splat_out_dir)
+            del gs_generator
+            torch.cuda.empty_cache()
 
             # ExitStack closes here — temp dirs deleted after SHARP reads view slices
             # but before we write final PLYs (which go to output_dir, not views_base).
@@ -198,6 +202,7 @@ class Pipeline:
             pano_poses=pano_poses,
             da3_world_pts=da3_pts_per_pano,
             scale_mode=cfg.scale_mode,
+            n_da3_clean=n_da3_clean,
         )
 
         ref_view = all_sharp_views[0]
@@ -221,4 +226,7 @@ class Pipeline:
                 )
                 print(f"Saved pano {pid}: {pano_out}")
 
-        return merged_splat, per_pano_splats
+        result = (merged_splat, per_pano_splats)
+        del merged_splat, per_pano_splats, gaussian_list, all_sharp_views, all_da3_views, processor
+        torch.cuda.empty_cache()
+        return result

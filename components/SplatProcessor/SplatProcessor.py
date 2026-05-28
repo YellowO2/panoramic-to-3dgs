@@ -6,6 +6,7 @@ from datatype import View
 from components.SplatProcessor.utils import (
     project_world_cloud_to_view,
     rotate_to_pose,
+    scale_gaussians,
     trim_by_fov,
     trim_by_cone,
     trim_by_pitch_bottom,
@@ -164,6 +165,7 @@ class SplatProcessor:
         pano_poses: dict = None,
         da3_world_pts=None,
         scale_mode: str = "da3_zslab",
+        n_da3_clean: int | None = None,
     ) -> tuple[Gaussians3D, dict[int, Gaussians3D]]:
         """Align, trim, pose, and merge Gaussian splats.
 
@@ -195,6 +197,58 @@ class SplatProcessor:
             all_da3_pts = np.concatenate(parts, axis=0) if parts else None
         elif da3_world_pts is not None:
             all_da3_pts = da3_world_pts
+
+        # SHARP-only fallback: DA3 cloud is unreliable (too few cleaned slices),
+        # so ignore DA3 entirely and align every slice to the median SHARP
+        # elevation across side slices.
+        sharp_only_fallback = (
+            scale_mode.startswith("da3_")
+            and n_da3_clean is not None
+            and n_da3_clean < 6
+        )
+        if sharp_only_fallback:
+            print(
+                f"--- DA3 cloud unreliable ({n_da3_clean} clean slices < 6), "
+                f"SHARP-only fallback ---"
+            )
+            sharp_elevs = []
+            for view, splat in zip(views, splats_list):
+                if view.pitch in (90, -90):
+                    continue
+                mv = splat.mean_vectors[0].detach().cpu().numpy()
+                e = elevation_estimate(mv[:, 1], mv[:, 2])
+                if e is not None and e > 1e-6:
+                    sharp_elevs.append(e)
+            target = float(np.median(sharp_elevs)) if sharp_elevs else None
+            print(
+                f"  [SHARP-only] side-slice elevs: "
+                f"{[f'{e:.3f}' for e in sharp_elevs]}  target (median): "
+                f"{target if target is None else f'{target:.4f}'}"
+            )
+
+            if target is not None:
+                for i, (view, splat) in enumerate(zip(views, splats_list)):
+                    if view.pitch == 90:
+                        print(f"  [SHARP-only] yaw={view.yaw:+.0f}° sky skipped")
+                        continue
+                    if view.pitch == -90:
+                        # Floor: scale by target / median Z (camera-above-floor distance).
+                        mv = splat.mean_vectors[0].detach().cpu().numpy()
+                        forward = mv[:, 2] > 0
+                        if not forward.any():
+                            continue
+                        sharp_z = float(np.median(mv[forward, 2]))
+                        if sharp_z <= 1e-6:
+                            continue
+                        scale = target / sharp_z
+                        print(f"  [SHARP-only] floor SHARP Z: {sharp_z:.4f}  scale: {scale:.4f}")
+                        splats_list[i] = scale_gaussians(splat, scale)
+                    else:
+                        splats_list[i] = align_da3_y_ground(splat, target)
+
+            # Disable downstream DA3 paths.
+            all_da3_pts = None
+            scale_mode = "_sharp_only"
 
         # y_ground produces one uniform scalar per slice; it must scale the WHOLE
         # slice rigidly. Apply before split_depth_zones so keep/sky zones ride the
