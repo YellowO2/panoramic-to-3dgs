@@ -75,6 +75,11 @@ class SplatProcessor:
     def _try_yground_fallback(
         self, splat, view, pano_poses, da3_world_pts, R_c2w
     ) -> Gaussians3D:
+        # Y-ground elevation only makes sense when slice-camera Y is gravity-down,
+        # which is true for pitch=0 side slices but not for pitch=±90.
+        if view.pitch in (90, -90):
+            print(f"  [Fallback] yaw={view.yaw:.0f}° pitch={view.pitch:+.0f}° skipped (not gravity-aligned)")
+            return splat
         pano_data = pano_poses.get(view.pano_id) if pano_poses else None
         if pano_data is None:
             return splat
@@ -166,6 +171,7 @@ class SplatProcessor:
         da3_world_pts=None,
         scale_mode: str = "da3_zslab",
         n_da3_clean: int | None = None,
+        target_pano_id: int = 0,
     ) -> tuple[Gaussians3D, dict[int, Gaussians3D]]:
         """Align, trim, pose, and merge Gaussian splats.
 
@@ -427,5 +433,25 @@ class SplatProcessor:
                 #     voronoi_buffer_m=self.voronoi_buffer_m,
                 #     seam_band_m=self.voronoi_buffer_m * 4,
                 # )
+
+        # Anchor target pano's capture point at (0,0,0) so viewers that place the
+        # camera at world origin land at the capture point.
+        anchor = (
+            pano_poses[target_pano_id]["center"]
+            if pano_poses and target_pano_id in pano_poses
+            else None
+        )
+        if anchor is not None and np.linalg.norm(anchor) > 1e-9:
+            print(f"  [Anchor] Shifting cloud so pano {target_pano_id} center {anchor} → (0,0,0)")
+            anchor_t = torch.tensor(anchor, dtype=torch.float32)
+            for pid in list(per_pano_merged.keys()):
+                s = per_pano_merged[pid]
+                per_pano_merged[pid] = Gaussians3D(
+                    mean_vectors=s.mean_vectors - anchor_t,
+                    singular_values=s.singular_values,
+                    quaternions=s.quaternions,
+                    colors=s.colors,
+                    opacities=s.opacities,
+                )
 
         return merge(list(per_pano_merged.values())), per_pano_merged

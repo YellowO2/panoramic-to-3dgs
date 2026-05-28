@@ -42,7 +42,7 @@ class Pipeline:
         self,
         panorama_paths: list[str],
         output_dir: str,
-        generate_pano_ids: Optional[list[int]] = None,
+        target_pano_id: int = 0,
         external_depth_paths: Optional[list[str]] = None,
     ) -> tuple[Gaussians3D, dict[int, Gaussians3D]]:
         """Run the full pipeline: align, process, and merge Gaussian splats.
@@ -50,8 +50,9 @@ class Pipeline:
         Args:
             panorama_paths: Paths to input panorama images.
             output_dir: Directory to write outputs.
-            generate_pano_ids: If set, only generate splats for these pano indices.
-                               All panos still contribute to depth estimation.
+            target_pano_id: Index of the pano to generate splats for. All other panos
+                            are used only for pose/depth support. The output PLY is
+                            anchored so this pano's capture point lands at (0,0,0).
             external_depth_paths: Optional per-pano depth map paths (depth_mode='external').
 
         Returns:
@@ -165,12 +166,9 @@ class Pipeline:
                 del da3, da3_result, filtered_da3_views, da3_cols, da3_pts
                 torch.cuda.empty_cache()
 
-            if generate_pano_ids is not None:
-                generate_set = set(generate_pano_ids)
-                all_sharp_views = [v for v in all_sharp_views if v.pano_id in generate_set]
+            all_sharp_views = [v for v in all_sharp_views if v.pano_id == target_pano_id]
             print(
-                f"Generating splats for {len(all_sharp_views)} views across panos: "
-                f"{sorted({v.pano_id for v in all_sharp_views})}"
+                f"Generating splats for {len(all_sharp_views)} views of target pano {target_pano_id}"
             )
 
             print("--- Step: Splat Generation (SHARP) ---")
@@ -203,6 +201,7 @@ class Pipeline:
             da3_world_pts=da3_pts_per_pano,
             scale_mode=cfg.scale_mode,
             n_da3_clean=n_da3_clean,
+            target_pano_id=target_pano_id,
         )
 
         ref_view = all_sharp_views[0]
