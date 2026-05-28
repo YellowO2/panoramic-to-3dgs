@@ -2,12 +2,10 @@ import os
 import json
 import tempfile
 import contextlib
-import torch
 import numpy as np
-from typing import Optional
+import torch
 
 from components.SplatGenerator.SplatGenerator import SplatGenerator
-from components.DepthMapGenerator.DA360DepthModel import DA360DepthModel
 from components.DepthMapGenerator.DA3Model import DA3Model
 from components.SplatProcessor.SplatProcessor import SplatProcessor
 from components.ViewExtractor.ViewExtractor import extract_views, extract_views_for_da3
@@ -43,37 +41,28 @@ class Pipeline:
         panorama_paths: list[str],
         output_dir: str,
         target_pano_id: int = 0,
-        external_depth_paths: Optional[list[str]] = None,
-    ) -> tuple[Gaussians3D, dict[int, Gaussians3D]]:
+    ) -> Gaussians3D:
         """Run the full pipeline: align, process, and merge Gaussian splats.
 
         Args:
-            panorama_paths: Paths to input panorama images.
+            panorama_paths: Paths to input panorama images. The target pano plus any
+                            nearby supporting panos (used by DA3 for joint depth/pose).
             output_dir: Directory to write outputs.
             target_pano_id: Index of the pano to generate splats for. All other panos
-                            are used only for pose/depth support. The output PLY is
+                            are used only for DA3 depth/pose support. The output PLY is
                             anchored so this pano's capture point lands at (0,0,0).
-            external_depth_paths: Optional per-pano depth map paths (depth_mode='external').
 
         Returns:
-            (merged_splat, per_pano_splats)
+            Merged Gaussian splat (also saved as final_output.ply).
         """
         cfg = self.config
         debug = cfg.debug
-        print(f"Starting pipeline for {len(panorama_paths)} panoramas | Mode: {cfg.depth_mode} | Debug: {debug}")
+        print(f"Starting pipeline for {len(panorama_paths)} panoramas | Debug: {debug}")
         os.makedirs(output_dir, exist_ok=True)
         saver = Saver() if debug else None
 
         all_sharp_views = []
         all_da3_views = []
-        pano_poses = None
-        da3_pts_per_pano = None
-        n_da3_clean = None
-
-        da360_model = None
-        if cfg.depth_mode == "da360":
-            da360_model = DA360DepthModel(cfg.da360_model)
-            da3_pts_per_pano = {}
 
         with contextlib.ExitStack() as stack:
             # In debug mode, write view slices into output_dir so they persist.
@@ -93,20 +82,6 @@ class Pipeline:
                     cleaner.clean(current_image, output_path=cleaned_path)
                     current_image = cleaned_path
 
-                if cfg.depth_mode == "da360":
-                    pano_depth, pano_rgb = da360_model.predict(current_image)
-                    world_pts, world_cols = DA360DepthModel.to_world_pts(pano_depth, pano_rgb)
-                    da3_pts_per_pano[i] = world_pts
-                    if debug:
-                        saver.save_point_cloud(
-                            world_pts,
-                            os.path.join(output_dir, f"da360_debug_pano_{i}.ply"),
-                            colors=world_cols,
-                        )
-                elif cfg.depth_mode == "external" and external_depth_paths:
-                    import cv2
-                    pano_depth = cv2.imread(external_depth_paths[i], cv2.IMREAD_UNCHANGED)
-
                 sharp_dir = os.path.join(views_base, f"views_pano_{i}_sharp")
                 os.makedirs(sharp_dir, exist_ok=True)
                 all_sharp_views.extend(
@@ -122,49 +97,37 @@ class Pipeline:
                     )
                 )
 
-                if cfg.depth_mode == "da3":
-                    da3_dir = os.path.join(views_base, f"views_pano_{i}_da3")
-                    os.makedirs(da3_dir, exist_ok=True)
-                    all_da3_views.extend(
-                        extract_views_for_da3(
-                            current_image, da3_dir, prefix=f"pano_{i}_", pano_id=i
-                        )
+                da3_dir = os.path.join(views_base, f"views_pano_{i}_da3")
+                os.makedirs(da3_dir, exist_ok=True)
+                all_da3_views.extend(
+                    extract_views_for_da3(
+                        current_image, da3_dir, prefix=f"pano_{i}_", pano_id=i
                     )
-
-            if cfg.depth_mode == "da360":
-                if len(panorama_paths) == 1:
-                    pano_poses = {0: {"center": np.zeros(3), "rotation": np.eye(3)}}
-                else:
-                    print(
-                        "Warning: multi-pano DA360 has no inter-pano pose estimation; "
-                        "depth alignment disabled."
-                    )
-                    da3_pts_per_pano = None
-
-            if cfg.depth_mode == "da3":
-                print("--- Step: DA3 Global Pose Processing ---")
-                da3 = DA3Model(cfg.da3_model)
-                filtered_da3_views, da3_result = da3.process_views(all_da3_views)
-                pano_poses = da3_result.pano_poses
-
-                da3_pts, da3_cols, da3_pts_per_pano = backproject_views_to_pcd(
-                    filtered_da3_views, da3_result
                 )
-                if debug and da3_pts is not None:
-                    print("--- Step: Saving DA3 Debug PCDs ---")
-                    saver.save_point_cloud(
-                        da3_pts,
-                        os.path.join(output_dir, "da3_debug_consistency.ply"),
-                        colors=da3_cols,
-                    )
-                    for pid, pts in da3_pts_per_pano.items():
-                        saver.save_point_cloud(
-                            pts, os.path.join(output_dir, f"da3_debug_pano_{pid}.ply")
-                        )
 
-                n_da3_clean = len(filtered_da3_views)
-                del da3, da3_result, filtered_da3_views, da3_cols, da3_pts
-                torch.cuda.empty_cache()
+            print("--- Step: DA3 Global Pose Processing ---")
+            da3 = DA3Model(cfg.da3_model)
+            filtered_da3_views, da3_result = da3.process_views(all_da3_views)
+            pano_poses = da3_result.pano_poses
+
+            da3_pts, da3_cols, da3_pts_per_pano = backproject_views_to_pcd(
+                filtered_da3_views, da3_result
+            )
+            if debug and da3_pts is not None:
+                print("--- Step: Saving DA3 Debug PCDs ---")
+                saver.save_point_cloud(
+                    da3_pts,
+                    os.path.join(output_dir, "da3_debug_consistency.ply"),
+                    colors=da3_cols,
+                )
+                for pid, pts in da3_pts_per_pano.items():
+                    saver.save_point_cloud(
+                        pts, os.path.join(output_dir, f"da3_debug_pano_{pid}.ply")
+                    )
+
+            n_da3_clean = len(filtered_da3_views)
+            del da3, da3_result, filtered_da3_views, da3_cols, da3_pts
+            torch.cuda.empty_cache()
 
             all_sharp_views = [v for v in all_sharp_views if v.pano_id == target_pano_id]
             print(
@@ -182,23 +145,32 @@ class Pipeline:
             # but before we write final PLYs (which go to output_dir, not views_base).
 
         print("--- Step: Splat Processing (Alignment/Merge) ---")
+        # Flatten per-pano DA3 points into one global cloud (used by both alignment
+        # paths and the floor view).
+        all_da3_pts = (
+            np.concatenate(
+                [pts for pts in da3_pts_per_pano.values() if pts is not None], axis=0
+            )
+            if da3_pts_per_pano
+            else None
+        )
+
         processor = SplatProcessor(
             num_z_slabs=cfg.num_z_slabs,
             num_fov_slabs=cfg.num_fov_slabs,
             smooth_sigma_m=cfg.smooth_sigma_m,
             smooth_sigma_fov=cfg.smooth_sigma_fov,
-            voronoi_buffer_m=cfg.voronoi_buffer_m,
             floor_keep_fraction=cfg.floor_keep_fraction,
             min_depth_coverage=cfg.min_depth_coverage,
             align_depth=cfg.align_depth,
             near_depth=cfg.near_depth,
             sky_depth=cfg.sky_depth,
         )
-        merged_splat, per_pano_splats = processor.process(
+        merged_splat = processor.process(
             all_sharp_views,
             gaussian_list,
             pano_poses=pano_poses,
-            da3_world_pts=da3_pts_per_pano,
+            all_da3_pts=all_da3_pts,
             scale_mode=cfg.scale_mode,
             n_da3_clean=n_da3_clean,
             target_pano_id=target_pano_id,
@@ -214,18 +186,6 @@ class Pipeline:
         )
         print(f"Pipeline complete: {final_path}")
 
-        if debug:
-            for pid, splat in per_pano_splats.items():
-                pano_out = os.path.join(output_dir, f"output_pano_{pid}.ply")
-                save_ply(
-                    splat,
-                    f_px=ref_view.focal_px,
-                    image_shape=(ref_view.height, ref_view.width),
-                    path=pano_out,
-                )
-                print(f"Saved pano {pid}: {pano_out}")
-
-        result = (merged_splat, per_pano_splats)
-        del merged_splat, per_pano_splats, gaussian_list, all_sharp_views, all_da3_views, processor
+        del gaussian_list, all_sharp_views, all_da3_views, processor
         torch.cuda.empty_cache()
-        return result
+        return merged_splat

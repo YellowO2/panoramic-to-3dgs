@@ -4,7 +4,6 @@ import math
 import cv2
 import os
 from scipy.spatial.transform import Rotation
-from scipy.ndimage import gaussian_filter1d
 from sharp.utils.gaussians import Gaussians3D, apply_transform
 
 
@@ -108,28 +107,6 @@ def project_world_cloud_to_view(
     return depth_map
 
 
-def bilinear_interpolate_grid(
-    grid, all_px, all_py, cell_width, cell_height, grid_cells_x, grid_cells_y
-):
-    gx_cont, gy_cont = all_px / cell_width - 0.5, all_py / cell_height - 0.5
-    gx0, gy0 = np.clip(
-        np.floor(gx_cont).astype(np.int32), 0, grid_cells_x - 1
-    ), np.clip(np.floor(gy_cont).astype(np.int32), 0, grid_cells_y - 1)
-    gx1, gy1 = np.clip(gx0 + 1, 0, grid_cells_x - 1), np.clip(
-        gy0 + 1, 0, grid_cells_y - 1
-    )
-    wx, wy = np.clip(gx_cont - gx0, 0, 1).astype(np.float32), np.clip(
-        gy_cont - gy0, 0, 1
-    ).astype(np.float32)
-    s00, s01, s10, s11 = grid[gy0, gx0], grid[gy0, gx1], grid[gy1, gx0], grid[gy1, gx1]
-    return (
-        s00 * (1 - wx) * (1 - wy)
-        + s01 * wx * (1 - wy)
-        + s10 * (1 - wx) * wy
-        + s11 * wx * wy
-    )
-
-
 def project_gaussians_to_2d(
     gaussians: Gaussians3D,
     focal_x_px: float,
@@ -150,49 +127,6 @@ def project_gaussians_to_2d(
         & (pixel_y <= image_height - 1)
     )
     return pixel_x, pixel_y, depth_z, radial, valid
-
-
-def compute_per_point_scales(
-    pixel_x, pixel_y, radial, depth_z, reference_depth, valid, use_radial=True
-):
-    px_int, py_int = np.clip(
-        np.round(pixel_x[valid]).astype(np.int32), 0, reference_depth.shape[1] - 1
-    ), np.clip(
-        np.round(pixel_y[valid]).astype(np.int32), 0, reference_depth.shape[0] - 1
-    )
-    ref_depth_sampled, current_depth = reference_depth[py_int, px_int], (
-        radial[valid] if use_radial else depth_z[valid]
-    )
-    ok = (
-        np.isfinite(ref_depth_sampled)
-        & (ref_depth_sampled > 1e-6)
-        & (current_depth > 1e-6)
-    )
-    if int(ok.sum()) < 64:
-        return None, 1.0, None
-    raw_scale_ok = ref_depth_sampled[ok].astype(np.float32) / current_depth[ok]
-    lo, hi = np.quantile(raw_scale_ok, [0.10, 0.90])
-    trimmed = raw_scale_ok[(raw_scale_ok >= lo) & (raw_scale_ok <= hi)]
-    return (
-        raw_scale_ok,
-        float(np.mean(trimmed)) if trimmed.size > 0 else float(np.mean(raw_scale_ok)),
-        ok,
-    )
-
-
-def measure_nearest_z(gaussians: Gaussians3D) -> float:
-    """
-    Returns the 0.1th percentile Z of all Gaussians as a proxy for the nearest surface distance.
-    In street panoramas the ground is almost always visible, so this ≈ ground distance,
-    which should be consistent across slices when scales are correct.
-    Returns None if too few points.
-    """
-    mv = gaussians.mean_vectors[0].detach().cpu().numpy()
-    z = mv[:, 2]
-    z = z[z > 0.01]
-    if len(z) < 16:
-        return None
-    return float(np.percentile(z, 0.1))
 
 
 def scale_gaussians(gaussians: Gaussians3D, scale: float) -> Gaussians3D:
@@ -218,44 +152,6 @@ def rotate_to_pose(gaussians: Gaussians3D, yaw: float, pitch: float) -> Gaussian
         dim=1,
     )
     return apply_transform(gaussians, transform)
-
-
-def trim_by_max_depth(gaussians: Gaussians3D, max_depth: float) -> Gaussians3D:
-    radial = torch.norm(gaussians.mean_vectors[0], dim=1)
-    mask = radial <= max_depth
-    return Gaussians3D(
-        mean_vectors=gaussians.mean_vectors[:, mask, :],
-        singular_values=gaussians.singular_values[:, mask, :],
-        quaternions=gaussians.quaternions[:, mask, :],
-        colors=gaussians.colors[:, mask, :],
-        opacities=gaussians.opacities[:, mask],
-    )
-
-
-def trim_beyond_depth(gaussians: Gaussians3D, min_depth: float) -> Gaussians3D:
-    """Keep only Gaussians beyond min_depth (i.e. the far / sky portion)."""
-    radial = torch.norm(gaussians.mean_vectors[0], dim=1)
-    mask = radial > min_depth
-    return Gaussians3D(
-        mean_vectors=gaussians.mean_vectors[:, mask, :],
-        singular_values=gaussians.singular_values[:, mask, :],
-        quaternions=gaussians.quaternions[:, mask, :],
-        colors=gaussians.colors[:, mask, :],
-        opacities=gaussians.opacities[:, mask],
-    )
-
-
-def trim_depth_range(gaussians: Gaussians3D, min_depth: float, max_depth: float) -> Gaussians3D:
-    """Keep only Gaussians with depth in (min_depth, max_depth]."""
-    radial = torch.norm(gaussians.mean_vectors[0], dim=1)
-    mask = (radial > min_depth) & (radial <= max_depth)
-    return Gaussians3D(
-        mean_vectors=gaussians.mean_vectors[:, mask, :],
-        singular_values=gaussians.singular_values[:, mask, :],
-        quaternions=gaussians.quaternions[:, mask, :],
-        colors=gaussians.colors[:, mask, :],
-        opacities=gaussians.opacities[:, mask],
-    )
 
 
 def split_depth_zones(
@@ -341,203 +237,6 @@ def trim_by_pitch_bottom(gaussians: Gaussians3D, max_down_deg: float) -> Gaussia
     )
 
 
-def trim_by_pano_voronoi(
-    gaussians: Gaussians3D,
-    own_center: np.ndarray,
-    other_centers: list,
-    buffer_m: float = 1.0,
-) -> Gaussians3D:
-    """Keep Gaussians closer (XZ plane) to their own pano center than any other, plus a buffer."""
-    if not other_centers:
-        return gaussians
-    mv = gaussians.mean_vectors[0].detach().cpu().numpy()
-    xz = mv[:, [0, 2]]
-    dist_own = np.linalg.norm(xz - own_center[[0, 2]], axis=1)
-    other_dists = np.stack(
-        [np.linalg.norm(xz - c[[0, 2]], axis=1) for c in other_centers], axis=1
-    )
-    min_other = other_dists.min(axis=1)
-    mask = torch.tensor(dist_own <= min_other + buffer_m, device=gaussians.mean_vectors.device)
-    return Gaussians3D(
-        mean_vectors=gaussians.mean_vectors[:, mask, :],
-        singular_values=gaussians.singular_values[:, mask, :],
-        quaternions=gaussians.quaternions[:, mask, :],
-        colors=gaussians.colors[:, mask, :],
-        opacities=gaussians.opacities[:, mask],
-    )
-
-
-def correct_interpano_seams(
-    per_pano_merged: dict,
-    pano_centers: dict,
-    voronoi_buffer_m: float = 1.5,
-    seam_band_m: float = 4.0,
-    tang_bin_m: float = 1.0,
-    y_bin_m: float = 0.5,
-    smooth_sigma: float = 1.5,
-) -> dict:
-    """Close depth seams between adjacent panoramas using boundary-plane projection.
-
-    For each pano pair (A, B), a virtual plane is placed at the midpoint between
-    their centers, oriented perpendicular to the A→B direction.  Both panos'
-    near-boundary Gaussians are projected onto this plane via two axes:
-      - tangent: direction along the Voronoi boundary line
-      - Y: world vertical
-
-    Gaussians from A and B that represent the same surface land in the same
-    (tangent, Y) bin regardless of which side of the boundary they are on.
-    Within each shared bin the median depth from the plane is computed for A and
-    B separately; both are shifted in the A→B normal direction toward their
-    midpoint depth.  Correction is tapered to zero at seam_band_m so the fix
-    fades smoothly away from the boundary.
-    """
-    from scipy.ndimage import distance_transform_edt, gaussian_filter
-
-    pids = list(per_pano_merged.keys())
-    if len(pids) < 2:
-        return per_pano_merged
-
-    positions = {
-        pid: splat.mean_vectors[0].detach().cpu().numpy().astype(np.float64)
-        for pid, splat in per_pano_merged.items()
-    }
-    shifts = {pid: np.zeros((len(positions[pid]), 3), dtype=np.float32) for pid in pids}
-
-    def _fill_smooth_2d(grid_2d, sigma):
-        empty = np.isnan(grid_2d)
-        if empty.any() and (~empty).any():
-            _, nearest = distance_transform_edt(empty, return_indices=True)
-            grid_2d[empty] = grid_2d[nearest[0][empty], nearest[1][empty]]
-        elif empty.all():
-            grid_2d[:] = 0.0
-        if sigma > 0:
-            grid_2d = gaussian_filter(grid_2d.astype(np.float64), sigma=sigma).astype(np.float32)
-        return grid_2d
-
-    for i in range(len(pids)):
-        for j in range(i + 1, len(pids)):
-            pid_A, pid_B = pids[i], pids[j]
-            if pid_A not in pano_centers or pid_B not in pano_centers:
-                continue
-
-            cA_xz = pano_centers[pid_A][[0, 2]].astype(np.float64)
-            cB_xz = pano_centers[pid_B][[0, 2]].astype(np.float64)
-            sep = cB_xz - cA_xz
-            sep_len = np.linalg.norm(sep)
-            if sep_len < 1e-3:
-                continue
-
-            # Boundary-plane axes
-            norm_xz = sep / sep_len                            # A→B, depth axis
-            tang_xz = np.array([-norm_xz[1], norm_xz[0]])    # along boundary
-            mid_xz  = (cA_xz + cB_xz) / 2.0
-
-            pos_A = positions[pid_A]
-            pos_B = positions[pid_B]
-            xz_A  = pos_A[:, [0, 2]]
-            xz_B  = pos_B[:, [0, 2]]
-
-            dA_own   = np.linalg.norm(xz_A - cA_xz, axis=1)
-            dA_other = np.linalg.norm(xz_A - cB_xz, axis=1)
-            dB_own   = np.linalg.norm(xz_B - cB_xz, axis=1)
-            dB_other = np.linalg.norm(xz_B - cA_xz, axis=1)
-            bdist_A  = np.abs(dA_own - dA_other)
-            bdist_B  = np.abs(dB_own - dB_other)
-
-            idx_A = np.where(bdist_A <= seam_band_m)[0]
-            idx_B = np.where(bdist_B <= seam_band_m)[0]
-
-            print(f"  [Seam] Pano {pid_A}↔{pid_B}: {len(idx_A)} + {len(idx_B)} boundary Gaussians")
-            if len(idx_A) < 4 or len(idx_B) < 4:
-                continue
-
-            near_pos_A = pos_A[idx_A]
-            near_pos_B = pos_B[idx_B]
-            near_xz_A  = xz_A[idx_A]
-            near_xz_B  = xz_B[idx_B]
-
-            # Project onto boundary-plane axes
-            tang_A  = (near_xz_A - mid_xz) @ tang_xz   # coord along boundary
-            tang_B  = (near_xz_B - mid_xz) @ tang_xz
-            depth_A = (near_xz_A - mid_xz) @ norm_xz   # signed depth from plane
-            depth_B = (near_xz_B - mid_xz) @ norm_xz
-            y_A     = near_pos_A[:, 1]
-            y_B     = near_pos_B[:, 1]
-
-            # 2D grid: tangent × Y
-            all_tang = np.concatenate([tang_A, tang_B])
-            all_y    = np.concatenate([y_A,    y_B])
-            t_min, t_max = all_tang.min(), all_tang.max()
-            y_min, y_max = all_y.min(),    all_y.max()
-            n_tang = max(int((t_max - t_min) / tang_bin_m) + 1, 1)
-            n_y    = max(int((y_max - y_min) / y_bin_m)    + 1, 1)
-
-            def to_bin(tang, y):
-                bt = np.clip(((tang - t_min) / tang_bin_m).astype(np.int32), 0, n_tang - 1)
-                by = np.clip(((y    - y_min) / y_bin_m   ).astype(np.int32), 0, n_y    - 1)
-                return bt * n_y + by
-
-            bin_A = to_bin(tang_A, y_A)
-            bin_B = to_bin(tang_B, y_B)
-
-            # Per-bin median depth for A and B
-            depth_grid_A = np.full((n_tang * n_y,), np.nan, dtype=np.float32)
-            depth_grid_B = np.full((n_tang * n_y,), np.nan, dtype=np.float32)
-            for b in np.unique(bin_A):
-                depth_grid_A[b] = float(np.median(depth_A[bin_A == b]))
-            for b in np.unique(bin_B):
-                depth_grid_B[b] = float(np.median(depth_B[bin_B == b]))
-
-            both = ~np.isnan(depth_grid_A) & ~np.isnan(depth_grid_B)
-            n_shared = int(both.sum())
-            print(f"  [Seam] Pano {pid_A}↔{pid_B}: {n_shared} shared (tang×Y) bins")
-            if n_shared == 0:
-                print(f"  [Seam] No shared bins — consider increasing voronoi_buffer_m")
-                continue
-
-            # Target depth = midpoint; fill empties from nearest shared bin then smooth
-            target = np.where(both, (depth_grid_A + depth_grid_B) / 2.0, np.nan).astype(np.float32)
-            target = _fill_smooth_2d(target.reshape(n_tang, n_y), smooth_sigma).reshape(-1)
-
-            # Taper: full correction at Voronoi boundary, zero at seam_band_m
-            taper_A = (1.0 - bdist_A[idx_A] / seam_band_m).clip(0.0, 1.0).astype(np.float32)
-            taper_B = (1.0 - bdist_B[idx_B] / seam_band_m).clip(0.0, 1.0).astype(np.float32)
-
-            # Shift in norm_xz direction (XZ only, Y untouched)
-            delta_A = ((target[bin_A] - depth_A) * taper_A).astype(np.float32)
-            delta_B = ((target[bin_B] - depth_B) * taper_B).astype(np.float32)
-
-            shifts[pid_A][idx_A, 0] += (delta_A * norm_xz[0]).astype(np.float32)
-            shifts[pid_A][idx_A, 2] += (delta_A * norm_xz[1]).astype(np.float32)
-            shifts[pid_B][idx_B, 0] += (delta_B * norm_xz[0]).astype(np.float32)
-            shifts[pid_B][idx_B, 2] += (delta_B * norm_xz[1]).astype(np.float32)
-
-            print(
-                f"  [Seam] Pano {pid_A}↔{pid_B}: "
-                f"mean shift A={np.abs(delta_A).mean():.3f}m  B={np.abs(delta_B).mean():.3f}m"
-            )
-
-    # Apply shifts (position only — no size change since this is a translation)
-    result = {}
-    for pid, splat in per_pano_merged.items():
-        sh = shifts[pid]
-        if not np.any(sh):
-            result[pid] = splat
-            continue
-        device = splat.mean_vectors.device
-        sh_t   = torch.tensor(sh, dtype=torch.float32, device=device)
-        new_mv = splat.mean_vectors.clone()
-        new_mv[0] += sh_t
-        result[pid] = Gaussians3D(
-            mean_vectors=new_mv,
-            singular_values=splat.singular_values,
-            quaternions=splat.quaternions,
-            colors=splat.colors,
-            opacities=splat.opacities,
-        )
-    return result
-
-
 def merge(splats_list: list[Gaussians3D]) -> Gaussians3D:
     if not splats_list:
         return None
@@ -552,49 +251,3 @@ def merge(splats_list: list[Gaussians3D]) -> Gaussians3D:
     )
 
 
-def apply_smooth_alignment(
-    self,
-    gaussians: Gaussians3D,
-    grid: np.ndarray,
-    pixel_x: np.ndarray,
-    pixel_y: np.ndarray,
-    cell_width: float,
-    cell_height: float,
-    grid_cells_x: int,
-    grid_cells_y: int,
-    image_width: int,
-    image_height: int,
-    raw_scale_ok: np.ndarray,
-    valid: np.ndarray,
-    ok: np.ndarray,
-    median_scale: float,
-):
-    """Step 4: Interpolate grid scales and apply to Gaussian parameters."""
-    all_px = np.clip(pixel_x, 0, image_width - 1)
-    all_py = np.clip(pixel_y, 0, image_height - 1)
-    smooth_scale = bilinear_interpolate_grid(
-        grid, all_px, all_py, cell_width, cell_height, grid_cells_x, grid_cells_y
-    )
-
-    dw = float(np.clip(self.detail_weight, 0.0, 1.0))
-    if dw > 0.0:
-        per_point_raw = np.full(pixel_x.shape[0], median_scale, dtype=np.float32)
-        valid_indices = np.where(valid)[0]
-        ok_within_valid = np.where(ok)[0]
-        per_point_raw[valid_indices[ok_within_valid]] = raw_scale_ok
-        per_point_scale = smooth_scale * (1.0 - dw) + per_point_raw * dw
-    else:
-        per_point_scale = smooth_scale
-
-    device = gaussians.mean_vectors.device
-    scale_tensor = torch.tensor(
-        per_point_scale, dtype=torch.float32, device=device
-    ).unsqueeze(1)
-
-    return Gaussians3D(
-        mean_vectors=gaussians.mean_vectors * scale_tensor,
-        singular_values=gaussians.singular_values * scale_tensor,
-        quaternions=gaussians.quaternions,
-        colors=gaussians.colors,
-        opacities=gaussians.opacities,
-    )
