@@ -7,10 +7,18 @@ name = "panoramic-to-3dgs"
 version = "0.1.0"
 description = "Convert panoramic images into 3D Gaussian Splat scenes"
 requires-python = ">=3.10"
-dynamic = ["dependencies"]
-
-[tool.setuptools.dynamic]
-dependencies = {file = ["requirements.txt"]}
+dependencies = [
+    "numpy",
+    "torch",
+    "opencv-python",
+    "open3d",
+    "scipy",
+    "PyYAML",
+    "diffusers",
+    "transformers",
+    "depth-anything-3 @ git+https://github.com/ByteDance-Seed/Depth-Anything-3.git@41736238f5bced4debf3f2a12375d2466874866d",
+    "sharp @ git+https://github.com/apple/ml-sharp.git@1eaa046834b81852261262b41b0919f5c1efdd2e",
+]
 
 [tool.setuptools]
 py-modules = ["datatype"]
