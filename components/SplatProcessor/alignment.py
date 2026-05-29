@@ -4,6 +4,7 @@ from scipy.ndimage import distance_transform_edt, gaussian_filter
 
 from sharp.utils.gaussians import Gaussians3D
 from components.SplatProcessor.utils import (
+    measure_nearest_z,
     project_gaussians_to_2d,
     project_world_cloud_to_view,
     scale_gaussians,
@@ -35,6 +36,29 @@ def _apply_per_gauss_scale(gaussians: Gaussians3D, per_gauss_scale: np.ndarray) 
         colors=gaussians.colors,
         opacities=gaussians.opacities,
     )
+
+
+def align_near_edge(views, splats_list: list[Gaussians3D]) -> list[Gaussians3D]:
+    """Scale each splat so all nearest-Z distances match the median across slices.
+
+    No depth model required — purely cross-slice consistency. Useful as a quick
+    baseline or when DA3 is unavailable.
+    """
+    nearest_zs = [measure_nearest_z(splat) for splat in splats_list]
+    for view, z in zip(views, nearest_zs):
+        print(f"  Nearest Z [{view.yaw:+.0f}°]: {f'{z:.3f}' if z is not None else 'N/A'}")
+
+    valid_zs = [z for z in nearest_zs if z is not None]
+    if not valid_zs:
+        print("  Near edge: no valid measurements, skipping.")
+        return splats_list
+
+    target = float(np.median(valid_zs))
+    print(f"  Near edge target Z: {target:.3f}")
+    return [
+        scale_gaussians(splat, target / z) if (z is not None and z > 1e-6) else splat
+        for splat, z in zip(splats_list, nearest_zs)
+    ]
 
 
 def align_da3_2dgrid(

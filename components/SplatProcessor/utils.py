@@ -129,6 +129,21 @@ def project_gaussians_to_2d(
     return pixel_x, pixel_y, depth_z, radial, valid
 
 
+def measure_nearest_z(gaussians: Gaussians3D) -> float | None:
+    """
+    Returns the 0.1th percentile Z of all Gaussians as a proxy for the nearest surface distance.
+    In street panoramas the ground is almost always visible, so this ≈ ground distance,
+    which should be consistent across slices when scales are correct.
+    Returns None if too few points.
+    """
+    mv = gaussians.mean_vectors[0].detach().cpu().numpy()
+    z = mv[:, 2]
+    z = z[z > 0.01]
+    if len(z) < 16:
+        return None
+    return float(np.percentile(z, 0.1))
+
+
 def scale_gaussians(gaussians: Gaussians3D, scale: float) -> Gaussians3D:
     s = torch.tensor(scale, dtype=torch.float32, device=gaussians.mean_vectors.device)
     return Gaussians3D(

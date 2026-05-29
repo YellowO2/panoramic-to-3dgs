@@ -3,7 +3,7 @@ models:
   da3: models/models--depth-anything--DA3NESTED-GIANT-LARGE-1.1/snapshots/b2359bdf726fb44ef62acca04d629dcf158053e7
 
 pipeline:
-  scale_mode: da3_y_ground  # 'da3_2dgrid_global' (recommended) | 'da3_y_ground' (uniform per-slice)
+  scale_mode: da3_y_ground  # 'da3_2dgrid_global' (recommended) | 'da3_y_ground' (uniform per-slice) | 'near_edge' (no depth model)
   clean_image: false   # run inpainting to remove people before processing
   slice_count: 4       # number of perspective slices SHARP generates per panorama
   include_sky: false   # include an upward (+90° pitch) SHARP view in addition to horizon + floor

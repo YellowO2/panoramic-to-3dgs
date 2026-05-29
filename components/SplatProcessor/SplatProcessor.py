@@ -15,6 +15,7 @@ from components.SplatProcessor.utils import (
     merge,
 )
 from components.SplatProcessor.alignment import (
+    align_near_edge,
     align_da3_2dgrid,
     align_da3_y_ground,
     align_floor_view,
@@ -98,6 +99,7 @@ class SplatProcessor:
         scale_mode:
             'da3_2dgrid_global' — 2D (Z × FOV) grid DA3 scale (recommended)
             'da3_y_ground'      — Y-ground elevation alignment (uniform per slice)
+            'near_edge'         — match nearest-Z across slices (no depth model required)
 
         Returns the merged splat, anchored so the target pano's capture point
         lands at world (0,0,0).
@@ -217,7 +219,10 @@ class SplatProcessor:
 
         # Step 2: scale alignment (near geometry only — trimmed contains no sky)
         print(f"--- Scale mode: {scale_mode} ---")
-        if scale_mode == "da3_2dgrid_global":
+        if scale_mode == "near_edge":
+            trimmed = align_near_edge(views, trimmed)
+
+        elif scale_mode == "da3_2dgrid_global":
             for i, (view, splat) in enumerate(zip(views, trimmed)):
                 if view.pitch == -90:
                     continue  # handled by floor alignment step below

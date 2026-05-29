@@ -35,6 +35,7 @@ Output: final_output.ply
 |------|-------------|
 | `da3_2dgrid_global` *(recommended)* | Scale each Gaussian by the median DA3/SHARP ratio inside a 2D (depth × FOV) cell, then smooth across cells. |
 | `da3_y_ground` | Uniform per-slice scale so SHARP's ground elevation matches DA3's ground elevation. Simpler and more robust when depth coverage is patchy. |
+| `near_edge` | Match nearest-Z across slices (no depth model required). Quick cross-slice consistency baseline. |
 
 If DA3 returns fewer than 6 clean slices, the processor falls back to a SHARP-only y-ground alignment derived from the median side-slice elevation.
 
