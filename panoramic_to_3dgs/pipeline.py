@@ -67,14 +67,11 @@ class Pipeline:
         debug = cfg.debug
 
         def _report(frac: float, msg: str) -> None:
+            print(f"[{frac:.0%}] {msg}")
             if progress_callback is not None:
-                try:
-                    progress_callback(frac, msg)
-                except Exception:
-                    pass
+                progress_callback(frac, msg)
 
         print(f"Starting pipeline for {len(panorama_paths)} panoramas | Debug: {debug}")
-        _report(0.0, "Starting pipeline...")
         os.makedirs(output_dir, exist_ok=True)
         saver = Saver() if debug else None
 
@@ -93,9 +90,8 @@ class Pipeline:
             for i, pano_path in enumerate(panorama_paths):
                 _report(
                     0.05 + 0.15 * (i / max(n_panos, 1)),
-                    f"Extracting views from panorama {i+1}/{n_panos}...",
+                    f"Extracting views from panorama {i+1}/{n_panos}: {pano_path}",
                 )
-                print(f"--- Processing Panorama {i+1}: {pano_path} ---")
                 current_image = pano_path
                 if cfg.clean_image:
                     from components.ImageCleaner.ImageCleaner import ImageCleaner
@@ -127,7 +123,6 @@ class Pipeline:
                     )
                 )
 
-            print("--- Step: DA3 Global Pose Processing ---")
             _report(0.20, "Running DA3 depth + pose estimation...")
             da3 = DA3Model(cfg.da3_model)
             filtered_da3_views, da3_result = da3.process_views(all_da3_views)
@@ -137,7 +132,7 @@ class Pipeline:
                 filtered_da3_views, da3_result
             )
             if debug and da3_pts is not None:
-                print("--- Step: Saving DA3 Debug PCDs ---")
+                print("Saving DA3 debug PCDs...")
                 saver.save_point_cloud(
                     da3_pts,
                     os.path.join(output_dir, "da3_debug_consistency.ply"),
@@ -157,7 +152,6 @@ class Pipeline:
                 f"Generating splats for {len(all_sharp_views)} views of target pano {target_pano_id}"
             )
 
-            print("--- Step: Splat Generation (SHARP) ---")
             _report(0.60, "Generating splats (SHARP)...")
             gs_generator = SplatGenerator(cfg.sharp_model)
             splat_out_dir = os.path.join(output_dir, "gs") if debug else None
@@ -168,7 +162,6 @@ class Pipeline:
             # ExitStack closes here — temp dirs deleted after SHARP reads view slices
             # but before we write final PLYs (which go to output_dir, not views_base).
 
-        print("--- Step: Splat Processing (Alignment/Merge) ---")
         _report(0.90, "Aligning and merging splats...")
         # Flatten per-pano DA3 points into one global cloud (used by both alignment
         # paths and the floor view).
