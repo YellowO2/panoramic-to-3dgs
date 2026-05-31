@@ -2,8 +2,12 @@ import os
 import json
 import tempfile
 import contextlib
+from typing import Callable, Optional
+
 import numpy as np
 import torch
+
+ProgressCallback = Callable[[float, str], None]
 
 from components.SplatGenerator.SplatGenerator import SplatGenerator
 from components.DepthMapGenerator.DA3Model import DA3Model
@@ -41,6 +45,7 @@ class Pipeline:
         panorama_paths: list[str],
         output_dir: str,
         target_pano_id: int = 0,
+        progress_callback: Optional[ProgressCallback] = None,
     ) -> Gaussians3D:
         """Run the full pipeline: align, process, and merge Gaussian splats.
 
@@ -51,13 +56,25 @@ class Pipeline:
             target_pano_id: Index of the pano to generate splats for. All other panos
                             are used only for DA3 depth/pose support. The output PLY is
                             anchored so this pano's capture point lands at (0,0,0).
+            progress_callback: Optional callable invoked at stage boundaries as
+                            progress_callback(fraction, message) where fraction is
+                            in [0, 1]. Useful for driving a UI progress bar.
 
         Returns:
             Merged Gaussian splat (also saved as final_output.ply).
         """
         cfg = self.config
         debug = cfg.debug
+
+        def _report(frac: float, msg: str) -> None:
+            if progress_callback is not None:
+                try:
+                    progress_callback(frac, msg)
+                except Exception:
+                    pass
+
         print(f"Starting pipeline for {len(panorama_paths)} panoramas | Debug: {debug}")
+        _report(0.0, "Starting pipeline...")
         os.makedirs(output_dir, exist_ok=True)
         saver = Saver() if debug else None
 
@@ -72,7 +89,12 @@ class Pipeline:
             else:
                 views_base = stack.enter_context(tempfile.TemporaryDirectory())
 
+            n_panos = len(panorama_paths)
             for i, pano_path in enumerate(panorama_paths):
+                _report(
+                    0.05 + 0.15 * (i / max(n_panos, 1)),
+                    f"Extracting views from panorama {i+1}/{n_panos}...",
+                )
                 print(f"--- Processing Panorama {i+1}: {pano_path} ---")
                 current_image = pano_path
                 if cfg.clean_image:
@@ -106,6 +128,7 @@ class Pipeline:
                 )
 
             print("--- Step: DA3 Global Pose Processing ---")
+            _report(0.20, "Running DA3 depth + pose estimation...")
             da3 = DA3Model(cfg.da3_model)
             filtered_da3_views, da3_result = da3.process_views(all_da3_views)
             pano_poses = da3_result.pano_poses
@@ -135,6 +158,7 @@ class Pipeline:
             )
 
             print("--- Step: Splat Generation (SHARP) ---")
+            _report(0.60, "Generating splats (SHARP)...")
             gs_generator = SplatGenerator(cfg.sharp_model)
             splat_out_dir = os.path.join(output_dir, "gs") if debug else None
             gaussian_list = gs_generator.generate_from_views(all_sharp_views, output_dir=splat_out_dir)
@@ -145,6 +169,7 @@ class Pipeline:
             # but before we write final PLYs (which go to output_dir, not views_base).
 
         print("--- Step: Splat Processing (Alignment/Merge) ---")
+        _report(0.90, "Aligning and merging splats...")
         # Flatten per-pano DA3 points into one global cloud (used by both alignment
         # paths and the floor view).
         all_da3_pts = (
@@ -185,6 +210,7 @@ class Pipeline:
             path=final_path,
         )
         print(f"Pipeline complete: {final_path}")
+        _report(1.0, "Done")
 
         del gaussian_list, all_sharp_views, all_da3_views, processor
         torch.cuda.empty_cache()
