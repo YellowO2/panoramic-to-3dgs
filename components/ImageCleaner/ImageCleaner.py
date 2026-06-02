@@ -1,4 +1,5 @@
 import torch
+from PIL import Image
 from diffusers import DiffusionPipeline
 from diffusers.utils import load_image
 
@@ -10,6 +11,20 @@ LIGHTNING_GUIDANCE = 1.0
 
 REMOVE_LORA_REPO = "prithivMLmods/Qwen-Image-Edit-2511-Object-Remover"
 REMOVE_DEFAULT_PROMPT = "Remove any people and vehicles."
+
+# Qwen-Image-Edit-2511 OOMs much past ~2MP. We pick the largest aspect-preserving
+# size under this budget, rounded to a multiple of 16 (VAE + patch stride).
+MAX_EDIT_PIXELS = 2048 * 1024
+EDIT_SIZE_MULTIPLE = 16
+
+
+def _fit_edit_size(w: int, h: int) -> tuple[int, int]:
+    aspect = w / h
+    target_h = int((MAX_EDIT_PIXELS / aspect) ** 0.5)
+    target_w = int(target_h * aspect)
+    target_w = max(EDIT_SIZE_MULTIPLE, (target_w // EDIT_SIZE_MULTIPLE) * EDIT_SIZE_MULTIPLE)
+    target_h = max(EDIT_SIZE_MULTIPLE, (target_h // EDIT_SIZE_MULTIPLE) * EDIT_SIZE_MULTIPLE)
+    return target_w, target_h
 
 
 class ImageCleaner:
@@ -54,13 +69,20 @@ class ImageCleaner:
             self.pipe.set_adapters("speed")
 
         input_image = load_image(image_path)
-        print(f"Editing image {image_path} (mode={mode})...")
+        orig_w, orig_h = input_image.size
+        edit_w, edit_h = _fit_edit_size(orig_w, orig_h)
+        print(f"Editing {image_path} (mode={mode}, edit_size={edit_w}x{edit_h}, restored to {orig_w}x{orig_h})...")
         image = self.pipe(
             prompt=prompt,
             image=input_image,
+            width=edit_w,
+            height=edit_h,
             num_inference_steps=LIGHTNING_STEPS,
             guidance_scale=LIGHTNING_GUIDANCE,
         ).images[0]
+
+        if (image.width, image.height) != (orig_w, orig_h):
+            image = image.resize((orig_w, orig_h), Image.LANCZOS)
 
         if output_path:
             image.save(output_path)
