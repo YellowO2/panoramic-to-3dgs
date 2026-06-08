@@ -41,22 +41,35 @@ class Pipeline:
         panorama_paths: list[str],
         output_dir: str,
         target_pano_id: int = 0,
+        depth_panorama_paths: list[str] | None = None,
     ) -> Gaussians3D:
         """Run the full pipeline: align, process, and merge Gaussian splats.
 
         Args:
-            panorama_paths: Paths to input panorama images. The target pano plus any
-                            nearby supporting panos (used by DA3 for joint depth/pose).
+            panorama_paths: Paths to input panorama images used to build the splat
+                            (appearance + per-view geometry via SHARP). The target
+                            pano plus any nearby supporting panos.
             output_dir: Directory to write outputs.
             target_pano_id: Index of the pano to generate splats for. All other panos
                             are used only for DA3 depth/pose support. The output PLY is
                             anchored so this pano's capture point lands at (0,0,0).
+            depth_panorama_paths: Optional parallel list of panorama paths to feed
+                            DA3 for global pose + depth correspondence. Defaults to
+                            panorama_paths. Useful when the splat input has been
+                            relit (e.g. day→night): DA3 struggles to match features
+                            across dark scenes, so pass the original day panos here
+                            while passing the relit ones via panorama_paths.
 
         Returns:
             Merged Gaussian splat (also saved as final_output.ply).
         """
         cfg = self.config
         debug = cfg.debug
+        if depth_panorama_paths is None:
+            depth_panorama_paths = panorama_paths
+        assert len(depth_panorama_paths) == len(panorama_paths), (
+            "depth_panorama_paths must be parallel to panorama_paths"
+        )
         print(f"Starting pipeline for {len(panorama_paths)} panoramas | Debug: {debug}")
         os.makedirs(output_dir, exist_ok=True)
         saver = Saver() if debug else None
@@ -72,21 +85,27 @@ class Pipeline:
             else:
                 views_base = stack.enter_context(tempfile.TemporaryDirectory())
 
-            for i, pano_path in enumerate(panorama_paths):
+            for i, (pano_path, depth_pano_path) in enumerate(
+                zip(panorama_paths, depth_panorama_paths)
+            ):
                 print(f"--- Processing Panorama {i+1}: {pano_path} ---")
-                current_image = pano_path
+                if depth_pano_path != pano_path:
+                    print(f"    (DA3 depth source: {depth_pano_path})")
+                splat_image = pano_path
+                depth_image = depth_pano_path
                 if cfg.clean_image:
                     from components.ImageCleaner.ImageCleaner import ImageCleaner
                     cleaner = ImageCleaner()
                     cleaned_path = os.path.join(output_dir, f"cleaned_pano_{i}.png")
-                    cleaner.clean(current_image, output_path=cleaned_path)
-                    current_image = cleaned_path
+                    cleaner.clean(splat_image, output_path=cleaned_path)
+                    splat_image = cleaned_path
+                    depth_image = cleaned_path
 
                 sharp_dir = os.path.join(views_base, f"views_pano_{i}_sharp")
                 os.makedirs(sharp_dir, exist_ok=True)
                 all_sharp_views.extend(
                     extract_views(
-                        current_image,
+                        splat_image,
                         sharp_dir,
                         overlap_degrees=20,
                         slice_count=cfg.slice_count,
@@ -101,7 +120,7 @@ class Pipeline:
                 os.makedirs(da3_dir, exist_ok=True)
                 all_da3_views.extend(
                     extract_views_for_da3(
-                        current_image, da3_dir, prefix=f"pano_{i}_", pano_id=i
+                        depth_image, da3_dir, prefix=f"pano_{i}_", pano_id=i
                     )
                 )
 
