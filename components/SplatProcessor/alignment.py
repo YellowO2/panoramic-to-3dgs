@@ -11,8 +11,8 @@ from components.SplatProcessor.utils import (
 )
 
 
-def elevation_estimate(y_values: np.ndarray, z_values: np.ndarray, z_percentile: float = 0.5) -> float | None:
-    """Ground elevation: filter to nearest z_percentile% by Z, then 99th percentile of Y.
+def elevation_estimate(y_values: np.ndarray, z_values: np.ndarray, z_percentile: float = 0.5, y_percentile: float = 99.0) -> float | None:
+    """Ground elevation: filter to nearest z_percentile% by Z, then y_percentile of Y.
 
     Nearby points (small Z) are reliably ground-level. Y-down: large positive Y = ground.
     """
@@ -23,7 +23,7 @@ def elevation_estimate(y_values: np.ndarray, z_values: np.ndarray, z_percentile:
     close = valid & (z_values <= z_thresh)
     if close.sum() < 4:
         return None
-    return float(np.percentile(y_values[close], 99))
+    return float(np.percentile(y_values[close], y_percentile))
 
 
 def _apply_per_gauss_scale(gaussians: Gaussians3D, per_gauss_scale: np.ndarray) -> Gaussians3D:
@@ -164,7 +164,7 @@ def align_da3_y_ground(
     da3_elev_target is pre-computed once per panorama before the slice loop.
     """
     mv = gaussians.mean_vectors[0].detach().cpu().numpy()
-    sharp_elev = elevation_estimate(mv[:, 1], mv[:, 2])
+    sharp_elev = elevation_estimate(mv[:, 1], mv[:, 2], z_percentile=1.0, y_percentile=70.0)
 
     if sharp_elev is None or sharp_elev <= 1e-6:
         print("  [Y-ground] Invalid SHARP elevation, skipping.")
