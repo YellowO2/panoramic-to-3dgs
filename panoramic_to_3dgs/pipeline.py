@@ -45,7 +45,8 @@ def _run_da3_gs_pipeline(
         )
 
     final_path = os.path.join(output_dir, "final_output.ply")
-    save_gaussian_ply(prediction.gaussians, final_path)
+    ctx_depth = torch.from_numpy(prediction.depth).unsqueeze(-1).to(prediction.gaussians.means)
+    save_gaussian_ply(prediction.gaussians, final_path, ctx_depth=ctx_depth)
     print(f"DA3 GS pipeline complete: {final_path}")
 
 
