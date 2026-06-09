@@ -16,6 +16,39 @@ from sharp.utils.gaussians import Gaussians3D, save_ply
 from panoramic_to_3dgs.config import PipelineConfig
 
 
+def _run_da3_gs_pipeline(
+    panorama_paths: list[str],
+    output_dir: str,
+    target_pano_id: int,
+    depth_panorama_paths: list[str],
+    cfg: "PipelineConfig",
+) -> None:
+    """DA3 GS backend: skips SHARP entirely. Extracts perspective views from the
+    target panorama and passes them directly to DA3 with infer_gs=True, which
+    produces a unified 3DGS in one feed-forward pass."""
+    from depth_anything_3.utils.gsply_helpers import save_gaussian_ply
+
+    target_pano_path = panorama_paths[target_pano_id]
+    depth_pano_path = depth_panorama_paths[target_pano_id]
+
+    with tempfile.TemporaryDirectory() as views_dir:
+        views = extract_views_for_da3(
+            depth_pano_path, views_dir, prefix="da3gs_", pano_id=0
+        )
+        print(f"  Extracted {len(views)} views for DA3 GS from {depth_pano_path}")
+
+        da3 = DA3Model(cfg.da3_model)
+        prediction = da3.model.inference(
+            [v.path for v in views],
+            infer_gs=True,
+            export_format="mini_npz",
+        )
+
+    final_path = os.path.join(output_dir, "final_output.ply")
+    save_gaussian_ply(prediction.gaussians, final_path)
+    print(f"DA3 GS pipeline complete: {final_path}")
+
+
 def load_panorama_folder(folder_path: str) -> tuple[list[str], list[str | None], list[dict]]:
     """Load panoramas from a folder containing metadata.json and pano_{id}.jpg files."""
     with open(os.path.join(folder_path, "metadata.json")) as f:
@@ -70,8 +103,15 @@ class Pipeline:
         assert len(depth_panorama_paths) == len(panorama_paths), (
             "depth_panorama_paths must be parallel to panorama_paths"
         )
-        print(f"Starting pipeline for {len(panorama_paths)} panoramas | Debug: {debug}")
+        print(f"Starting pipeline for {len(panorama_paths)} panoramas | Backend: {cfg.gs_backend} | Debug: {debug}")
+
         os.makedirs(output_dir, exist_ok=True)
+
+        if cfg.gs_backend == "da3":
+            _run_da3_gs_pipeline(
+                panorama_paths, output_dir, target_pano_id, depth_panorama_paths, cfg
+            )
+            return None
         saver = Saver() if debug else None
 
         all_sharp_views = []

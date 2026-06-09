@@ -9,6 +9,7 @@ class PipelineConfig:
     da3_model: str = ""
 
     # Pipeline
+    gs_backend: str = "sharp"  # 'sharp' | 'da3'
     scale_mode: str = "da3_2dgrid_global"  # 'da3_2dgrid_global' | 'da3_y_ground'
     clean_image: bool = False
     slice_count: int = 6
@@ -36,6 +37,7 @@ class PipelineConfig:
         return cls(
             sharp_model=models.get("sharp", ""),
             da3_model=models.get("da3", ""),
+            gs_backend=pipeline.get("gs_backend", "sharp"),
             scale_mode=pipeline.get("scale_mode", "da3_2dgrid_global"),
             clean_image=pipeline.get("clean_image", False),
             slice_count=pipeline.get("slice_count", 6),
