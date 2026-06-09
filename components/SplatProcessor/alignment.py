@@ -164,7 +164,7 @@ def align_da3_y_ground(
     da3_elev_target is pre-computed once per panorama before the slice loop.
     """
     mv = gaussians.mean_vectors[0].detach().cpu().numpy()
-    sharp_elev = elevation_estimate(mv[:, 1], mv[:, 2], z_percentile=1.0, y_percentile=70.0)
+    sharp_elev = elevation_estimate(mv[:, 1], mv[:, 2], z_percentile=2.0, y_percentile=50.0)
 
     if sharp_elev is None or sharp_elev <= 1e-6:
         print("  [Y-ground] Invalid SHARP elevation, skipping.")
