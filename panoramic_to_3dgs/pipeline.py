@@ -134,14 +134,6 @@ class Pipeline:
                     print(f"    (DA3 depth source: {depth_pano_path})")
                 splat_image = pano_path
                 depth_image = depth_pano_path
-                if cfg.clean_image:
-                    from components.ImageCleaner.ImageCleaner import ImageCleaner
-                    cleaner = ImageCleaner()
-                    cleaned_path = os.path.join(output_dir, f"cleaned_pano_{i}.png")
-                    cleaner.clean(splat_image, output_path=cleaned_path)
-                    splat_image = cleaned_path
-                    depth_image = cleaned_path
-
                 sharp_dir = os.path.join(views_base, f"views_pano_{i}_sharp")
                 os.makedirs(sharp_dir, exist_ok=True)
                 all_sharp_views.extend(
