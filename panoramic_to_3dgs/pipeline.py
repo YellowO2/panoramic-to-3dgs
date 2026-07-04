@@ -69,6 +69,8 @@ def load_panorama_folder(folder_path: str) -> tuple[list[str], list[str | None],
 class Pipeline:
     def __init__(self, config: PipelineConfig):
         self.config = config
+        self._da3 = DA3Model(config.da3_model, device="cpu")
+        self._gs_generator = SplatGenerator(config.sharp_model, device="cpu")
 
     def run(
         self,
@@ -158,8 +160,8 @@ class Pipeline:
                 )
 
             print("--- Step: DA3 Global Pose Processing ---")
-            da3 = DA3Model(cfg.da3_model)
-            filtered_da3_views, da3_result = da3.process_views(all_da3_views)
+            self._da3.to("cuda")
+            filtered_da3_views, da3_result = self._da3.process_views(all_da3_views)
             pano_poses = da3_result.pano_poses
 
             da3_pts, da3_cols, da3_pts_per_pano = backproject_views_to_pcd(
@@ -178,7 +180,8 @@ class Pipeline:
                     )
 
             n_da3_clean = len(filtered_da3_views)
-            del da3, da3_result, filtered_da3_views, da3_cols, da3_pts
+            self._da3.to("cpu")
+            del da3_result, filtered_da3_views, da3_cols, da3_pts
             torch.cuda.empty_cache()
 
             all_sharp_views = [v for v in all_sharp_views if v.pano_id == target_pano_id]
@@ -187,10 +190,10 @@ class Pipeline:
             )
 
             print("--- Step: Splat Generation (SHARP) ---")
-            gs_generator = SplatGenerator(cfg.sharp_model)
+            self._gs_generator.to("cuda")
             splat_out_dir = os.path.join(output_dir, "gs") if debug else None
-            gaussian_list = gs_generator.generate_from_views(all_sharp_views, output_dir=splat_out_dir)
-            del gs_generator
+            gaussian_list = self._gs_generator.generate_from_views(all_sharp_views, output_dir=splat_out_dir)
+            self._gs_generator.to("cpu")
             torch.cuda.empty_cache()
 
             # ExitStack closes here — temp dirs deleted after SHARP reads view slices

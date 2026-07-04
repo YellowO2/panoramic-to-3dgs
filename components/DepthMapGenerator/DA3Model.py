@@ -9,10 +9,15 @@ class DA3Result:
         self.prediction = prediction # Filtered DA3 Prediction object
 
 class DA3Model:
-    def __init__(self, model_path="./models/models--depth-anything--DA3NESTED-GIANT-LARGE-1.1/snapshots/b2359bdf726fb44ef62acca04d629dcf158053e7", device="cuda"):
+    def __init__(self, model_path="./models/models--depth-anything--DA3NESTED-GIANT-LARGE-1.1/snapshots/b2359bdf726fb44ef62acca04d629dcf158053e7", device="cpu"):
         self.device = device
-        print(f"Loading Depth Anything 3 model from '{model_path}' on {device}...")
+        print(f"Loading Depth Anything 3 model from '{model_path}' to {device}...")
         self.model = DepthAnything3.from_pretrained(model_path).to(device=device)
+
+    def to(self, device):
+        self.device = device
+        self.model = self.model.to(device=device)
+        return self
 
     def process_views(self, views: list[View], dist_thresh=0.2, angle_thresh=1):
         """

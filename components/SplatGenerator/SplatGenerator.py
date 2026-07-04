@@ -7,14 +7,14 @@ from sharp.utils.gaussians import save_ply
 from datatype import View
 
 class SplatGenerator:
-    def __init__(self, model_path: str, device: str = None):
-        self.device = self._resolve_device(device)
+    def __init__(self, model_path: str, device: str = "cpu"):
+        self.device = torch.device(device)
         self.predictor = self._load_sharp_predictor(model_path)
 
-    def _resolve_device(self, device: str = None):
-        if device:
-            return torch.device(device)
-        return torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+    def to(self, device):
+        self.device = torch.device(device)
+        self.predictor = self.predictor.to(self.device)
+        return self
 
     def _load_sharp_predictor(self, model_path: str):
         state_dict = torch.load(model_path, map_location=self.device, weights_only=True)
