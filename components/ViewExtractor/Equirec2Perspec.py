@@ -25,7 +25,53 @@ def lonlat2XY(lonlat, shape):
     lst = [X, Y]
     out = np.concatenate(lst, axis=-1)
 
-    return out 
+    return out
+
+def lonlat2xyz(lonlat):
+    lon = lonlat[..., 0:1]
+    lat = lonlat[..., 1:2]
+    x = np.cos(lat) * np.sin(lon)
+    y = np.sin(lat)
+    z = np.cos(lat) * np.cos(lon)
+    return np.concatenate([x, y, z], axis=-1)
+
+
+def rotate_equirectangular(img, roll: float, pitch: float):
+    """Rotate an equirectangular image about its own center: `pitch` about the
+    right/X axis, `roll` about the forward/Z axis, both in radians. Casts each
+    output pixel to a sphere direction, rotates it, casts back to a source
+    pixel, and remaps.
+
+    Used to correct for a panorama's own upright-correction tilt (e.g. from
+    Street View's pitch/roll metadata) before slicing it into perspective
+    views, so slices show a level-looking ground instead of one tilted by the
+    local road grade.
+    """
+    height, width = img.shape[:2]
+    x = np.arange(width)
+    y = np.arange(height)
+    x, y = np.meshgrid(x, y)
+    XY = np.stack([x, y], axis=-1).astype(np.float32)
+    lonlat_out = np.stack(
+        [
+            (XY[..., 0] / (width - 1) - 0.5) * (2 * np.pi),
+            (XY[..., 1] / (height - 1) - 0.5) * np.pi,
+        ],
+        axis=-1,
+    )
+    xyz_out = lonlat2xyz(lonlat_out)
+
+    x_axis = np.array([1.0, 0.0, 0.0], np.float32)
+    z_axis = np.array([0.0, 0.0, 1.0], np.float32)
+    R_pitch, _ = cv2.Rodrigues(x_axis * pitch)
+    R_roll, _ = cv2.Rodrigues(z_axis * roll)
+    R = R_roll @ R_pitch
+
+    xyz_src = xyz_out @ R
+    lonlat_src = xyz2lonlat(xyz_src)
+    XY_src = lonlat2XY(lonlat_src, shape=img.shape).astype(np.float32)
+    return cv2.remap(img, XY_src[..., 0], XY_src[..., 1], cv2.INTER_CUBIC, borderMode=cv2.BORDER_WRAP)
+
 
 class Equirectangular:
     def __init__(self, img_data):
