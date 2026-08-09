@@ -16,26 +16,36 @@ from sharp.utils.gaussians import Gaussians3D, save_ply
 from panoramic_to_3dgs.config import PipelineConfig
 
 
-def _run_da3_gs_pipeline(
-    panorama_paths: list[str],
-    output_dir: str,
-    target_pano_id: int,
-    depth_panorama_paths: list[str],
-    cfg: "PipelineConfig",
-) -> None:
+def _run_da3(target_depth_path: str, support_paths: list[str], cfg: "PipelineConfig", views_base: str):
+    """Run the entire DA3 side of the pipeline: slice target + support panos
+    into views, run DA3's joint multi-view pose+depth inference, and
+    backproject to world-space points/colors. Shared by run() (depth/scale
+    support for SHARP) and run_da3_pointcloud() (the entire output)."""
+    all_views = []
+    for i, path in enumerate([target_depth_path, *support_paths]):
+        da3_dir = os.path.join(views_base, f"views_pano_{i}_da3")
+        os.makedirs(da3_dir, exist_ok=True)
+        all_views.extend(extract_views_for_da3(path, da3_dir, prefix=f"pano_{i}_", pano_id=i))
+
+    da3 = DA3Model(cfg.da3_model)
+    filtered_views, da3_result = da3.process_views(all_views)
+    merged_pts, merged_cols, per_pano_pts, per_pano_cols = backproject_views_to_pcd(
+        filtered_views, da3_result
+    )
+    del da3
+    torch.cuda.empty_cache()
+    return filtered_views, da3_result, merged_pts, merged_cols, per_pano_pts, per_pano_cols
+
+
+def _run_da3_gs_pipeline(target_depth_path: str, output_dir: str, cfg: "PipelineConfig") -> None:
     """DA3 GS backend: skips SHARP entirely. Extracts perspective views from the
     target panorama and passes them directly to DA3 with infer_gs=True, which
     produces a unified 3DGS in one feed-forward pass."""
     from depth_anything_3.utils.gsply_helpers import save_gaussian_ply
 
-    target_pano_path = panorama_paths[target_pano_id]
-    depth_pano_path = depth_panorama_paths[target_pano_id]
-
     with tempfile.TemporaryDirectory() as views_dir:
-        views = extract_views_for_da3(
-            depth_pano_path, views_dir, prefix="da3gs_", pano_id=0
-        )
-        print(f"  Extracted {len(views)} views for DA3 GS from {depth_pano_path}")
+        views = extract_views_for_da3(target_depth_path, views_dir, prefix="da3gs_", pano_id=0)
+        print(f"  Extracted {len(views)} views for DA3 GS from {target_depth_path}")
 
         da3 = DA3Model(cfg.da3_model)
         prediction = da3.model.inference(
@@ -72,51 +82,47 @@ class Pipeline:
 
     def run(
         self,
-        panorama_paths: list[str],
+        target_appearance_path: str,
         output_dir: str,
-        target_pano_id: int = 0,
-        depth_panorama_paths: list[str] | None = None,
+        target_depth_path: str | None = None,
+        support_paths: list[str] | None = None,
+        save_da3_pointcloud: bool = False,
     ) -> Gaussians3D:
-        """Run the full pipeline: align, process, and merge Gaussian splats.
+        """Run the full pipeline: align, process, and merge Gaussian splats for one target pano.
 
         Args:
-            panorama_paths: Paths to input panorama images used to build the splat
-                            (appearance + per-view geometry via SHARP). The target
-                            pano plus any nearby supporting panos.
+            target_appearance_path: Image used to produce the 3DGS (SHARP input).
+                            May be an edited/relit version of the panorama.
             output_dir: Directory to write outputs.
-            target_pano_id: Index of the pano to generate splats for. All other panos
-                            are used only for DA3 depth/pose support. The output PLY is
-                            anchored so this pano's capture point lands at (0,0,0).
-            depth_panorama_paths: Optional parallel list of panorama paths to feed
-                            DA3 for global pose + depth correspondence. Defaults to
-                            panorama_paths. Useful when the splat input has been
-                            relit (e.g. day→night): DA3 struggles to match features
-                            across dark scenes, so pass the original day panos here
-                            while passing the relit ones via panorama_paths.
+            target_depth_path: Image used for the target's DA3 depth/pose.
+                            Defaults to target_appearance_path. Pass the original,
+                            unedited panorama here when target_appearance_path has
+                            been relit (e.g. day→night) — DA3 struggles to match
+                            features across dark scenes.
+            support_paths: Nearby panoramas used only as DA3 depth/pose context.
+            save_da3_pointcloud: Also export the raw DA3 point cloud (target +
+                            support panos merged) as da3_pointcloud.ply, alongside
+                            the Gaussian splat. Independent of cfg.debug.
 
         Returns:
-            Merged Gaussian splat (also saved as final_output.ply).
+            Merged Gaussian splat, anchored so the target's capture point lands
+            at (0, 0, 0) (also saved as final_output.ply).
         """
         cfg = self.config
         debug = cfg.debug
-        if depth_panorama_paths is None:
-            depth_panorama_paths = panorama_paths
-        assert len(depth_panorama_paths) == len(panorama_paths), (
-            "depth_panorama_paths must be parallel to panorama_paths"
+        target_depth_path = target_depth_path or target_appearance_path
+        support_paths = support_paths or []
+        print(
+            f"Starting pipeline for target + {len(support_paths)} support panoramas "
+            f"| Backend: {cfg.gs_backend} | Debug: {debug}"
         )
-        print(f"Starting pipeline for {len(panorama_paths)} panoramas | Backend: {cfg.gs_backend} | Debug: {debug}")
 
         os.makedirs(output_dir, exist_ok=True)
 
         if cfg.gs_backend == "da3":
-            _run_da3_gs_pipeline(
-                panorama_paths, output_dir, target_pano_id, depth_panorama_paths, cfg
-            )
+            _run_da3_gs_pipeline(target_depth_path, output_dir, cfg)
             return None
-        saver = Saver() if debug else None
-
-        all_sharp_views = []
-        all_da3_views = []
+        saver = Saver() if (debug or save_da3_pointcloud) else None
 
         with contextlib.ExitStack() as stack:
             # In debug mode, write view slices into output_dir so they persist.
@@ -126,65 +132,52 @@ class Pipeline:
             else:
                 views_base = stack.enter_context(tempfile.TemporaryDirectory())
 
-            for i, (pano_path, depth_pano_path) in enumerate(
-                zip(panorama_paths, depth_panorama_paths)
-            ):
-                print(f"--- Processing Panorama {i+1}: {pano_path} ---")
-                if depth_pano_path != pano_path:
-                    print(f"    (DA3 depth source: {depth_pano_path})")
-                splat_image = pano_path
-                depth_image = depth_pano_path
-                sharp_dir = os.path.join(views_base, f"views_pano_{i}_sharp")
-                os.makedirs(sharp_dir, exist_ok=True)
-                all_sharp_views.extend(
-                    extract_views(
-                        splat_image,
-                        sharp_dir,
-                        overlap_degrees=20,
-                        slice_count=cfg.slice_count,
-                        prefix=f"pano_{i}_",
-                        panorama_depth=None,
-                        pano_id=i,
-                        include_sky=cfg.include_sky,
-                    )
-                )
-
-                da3_dir = os.path.join(views_base, f"views_pano_{i}_da3")
-                os.makedirs(da3_dir, exist_ok=True)
-                all_da3_views.extend(
-                    extract_views_for_da3(
-                        depth_image, da3_dir, prefix=f"pano_{i}_", pano_id=i
-                    )
-                )
+            sharp_dir = os.path.join(views_base, "views_target_sharp")
+            os.makedirs(sharp_dir, exist_ok=True)
+            all_sharp_views = extract_views(
+                target_appearance_path,
+                sharp_dir,
+                overlap_degrees=20,
+                slice_count=cfg.slice_count,
+                prefix="pano_0_",
+                panorama_depth=None,
+                pano_id=0,
+                include_sky=cfg.include_sky,
+            )
 
             print("--- Step: DA3 Global Pose Processing ---")
-            da3 = DA3Model(cfg.da3_model)
-            filtered_da3_views, da3_result = da3.process_views(all_da3_views)
+            (
+                filtered_da3_views,
+                da3_result,
+                da3_pts,
+                da3_cols,
+                da3_pts_per_pano,
+                _da3_cols_per_pano,
+            ) = _run_da3(target_depth_path, support_paths, cfg, views_base)
             pano_poses = da3_result.pano_poses
 
-            da3_pts, da3_cols, da3_pts_per_pano = backproject_views_to_pcd(
-                filtered_da3_views, da3_result
-            )
-            if debug and da3_pts is not None:
-                print("--- Step: Saving DA3 Debug PCDs ---")
-                saver.save_point_cloud(
-                    da3_pts,
-                    os.path.join(output_dir, "da3_debug_consistency.ply"),
-                    colors=da3_cols,
-                )
-                for pid, pts in da3_pts_per_pano.items():
+            if da3_pts is not None:
+                if debug:
+                    print("--- Step: Saving DA3 Debug PCDs ---")
                     saver.save_point_cloud(
-                        pts, os.path.join(output_dir, f"da3_debug_pano_{pid}.ply")
+                        da3_pts,
+                        os.path.join(output_dir, "da3_debug_consistency.ply"),
+                        colors=da3_cols,
+                    )
+                    for pid, pts in da3_pts_per_pano.items():
+                        saver.save_point_cloud(
+                            pts, os.path.join(output_dir, f"da3_debug_pano_{pid}.ply")
+                        )
+                if save_da3_pointcloud:
+                    saver.save_point_cloud(
+                        da3_pts, os.path.join(output_dir, "da3_pointcloud.ply"), colors=da3_cols
                     )
 
             n_da3_clean = len(filtered_da3_views)
-            del da3, da3_result, filtered_da3_views, da3_cols, da3_pts
+            del da3_result, filtered_da3_views, da3_cols, da3_pts
             torch.cuda.empty_cache()
 
-            all_sharp_views = [v for v in all_sharp_views if v.pano_id == target_pano_id]
-            print(
-                f"Generating splats for {len(all_sharp_views)} views of target pano {target_pano_id}"
-            )
+            print(f"Generating splats for {len(all_sharp_views)} views of the target pano")
 
             print("--- Step: Splat Generation (SHARP) ---")
             gs_generator = SplatGenerator(cfg.sharp_model)
@@ -225,7 +218,6 @@ class Pipeline:
             all_da3_pts=all_da3_pts,
             scale_mode=cfg.scale_mode,
             n_da3_clean=n_da3_clean,
-            target_pano_id=target_pano_id,
         )
 
         ref_view = all_sharp_views[0]
@@ -238,6 +230,48 @@ class Pipeline:
         )
         print(f"Pipeline complete: {final_path}")
 
-        del gaussian_list, all_sharp_views, all_da3_views, processor
+        del gaussian_list, all_sharp_views, processor
         torch.cuda.empty_cache()
         return merged_splat
+
+    def run_da3_pointcloud(
+        self,
+        target_depth_path: str,
+        output_dir: str,
+        support_paths: list[str] | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Run only the DA3 half of the pipeline: no SHARP, no Gaussians.
+
+        target + support panos are fed to DA3 jointly for pose/depth
+        estimation, and all of their points are backprojected and merged into
+        the output — DA3's own multi-view consensus decides how well they
+        line up, same as the pano_poses used to align SHARP's splats in .run().
+
+        Useful as raw material for non-photoreal art (voxel grids, low-poly
+        meshing, etc.) instead of a full Gaussian splat, where DA3's point
+        cloud alone is easier to control than SHARP's splats.
+
+        Returns:
+            (points, colors): (N, 3) float32 world-space points and (N, 3)
+            float colors in [0, 1], merged across target + support panos.
+            Also saved as da3_pointcloud.ply in output_dir.
+        """
+        cfg = self.config
+        support_paths = support_paths or []
+        print(f"Starting DA3-only pipeline for target + {len(support_paths)} support panoramas")
+
+        os.makedirs(output_dir, exist_ok=True)
+
+        with tempfile.TemporaryDirectory() as views_base:
+            _, _, pts, cols, _, _ = _run_da3(target_depth_path, support_paths, cfg, views_base)
+
+        if pts is None:
+            raise RuntimeError(
+                "No usable views survived DA3 filtering "
+                "(check the 'Filtering view ...' logs above for dist/angle deviation)."
+            )
+
+        final_path = os.path.join(output_dir, "da3_pointcloud.ply")
+        Saver.save_point_cloud(pts, final_path, colors=cols)
+        print(f"DA3 point cloud pipeline complete: {final_path}")
+        return pts, cols

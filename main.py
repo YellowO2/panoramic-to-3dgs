@@ -6,13 +6,10 @@ if __name__ == "__main__":
 
     # --- Option A: folder input ---
     # panos, _, _ = load_panorama_folder("data/inputs/panoramas_example")
-    # pipeline.run(panos, output_dir="data/outputs/folder_test")
+    # pipeline.run(panos[0], output_dir="data/outputs/folder_test", support_paths=panos[1:])
 
-    # --- Option B: manual list ---
-    panos = [
-        "data/inputs/panoramas_sea_view/pano_rTCgvONHkRFIqvygt6llLA.jpg"
-    ]
+    # --- Option B: manual target ---
     pipeline.run(
-        panorama_paths=panos,
+        target_appearance_path="data/inputs/panoramas_sea_view/pano_rTCgvONHkRFIqvygt6llLA.jpg",
         output_dir="data/outputs/multi_pano_test",
     )

@@ -10,15 +10,21 @@ from sharp.utils.gaussians import Gaussians3D, apply_transform
 def backproject_views_to_pcd(views: list, da3_result):
     """
     Back-projects processed views into world space.
-    Returns (all_pts, all_cols) combined, plus per_pano dict {pano_id: pts}.
+    Returns (all_pts, all_cols) combined, plus per_pano dicts
+    {pano_id: pts} and {pano_id: colors}.
+
+    `views` must be index-aligned with da3_result.prediction (i.e. the exact
+    list DA3 was run on, not an arbitrary subset/reorder) — depth/pose/color
+    are looked up positionally by enumerate(views).
     """
     all_points = []
     all_colors = []
-    per_pano: dict[int, list] = {}
+    per_pano_pts: dict[int, list] = {}
+    per_pano_cols: dict[int, list] = {}
 
     pred = da3_result.prediction
     if pred is None:
-        return None, None, {}
+        return None, None, {}, {}
 
     for i, v in enumerate(views):
         # 1. Geometry from DA3
@@ -52,7 +58,7 @@ def backproject_views_to_pcd(views: list, da3_result):
 
         pts_world = (c2w[:3, :3] @ pts_cam.T).T + c2w[:3, 3]
         all_points.append(pts_world)
-        per_pano.setdefault(v.pano_id, []).append(pts_world)
+        per_pano_pts.setdefault(v.pano_id, []).append(pts_world)
 
         # 4. Colors
         if v.path and os.path.exists(v.path):
@@ -61,14 +67,20 @@ def backproject_views_to_pcd(views: list, da3_result):
                 img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
                 if img_rgb.shape[:2] != (h, w):
                     img_rgb = cv2.resize(img_rgb, (w, h))
-                all_colors.append(img_rgb.reshape(-1, 3)[vidx] / 255.0)
+                cols = img_rgb.reshape(-1, 3)[vidx] / 255.0
+                all_colors.append(cols)
+                per_pano_cols.setdefault(v.pano_id, []).append(cols)
 
     if not all_points:
-        return None, None, {}
-    consolidated = {pid: np.concatenate(pts, axis=0) for pid, pts in per_pano.items()}
-    return np.concatenate(all_points, axis=0), (
-        np.concatenate(all_colors, axis=0) if all_colors else None
-    ), consolidated
+        return None, None, {}, {}
+    consolidated_pts = {pid: np.concatenate(pts, axis=0) for pid, pts in per_pano_pts.items()}
+    consolidated_cols = {pid: np.concatenate(cols, axis=0) for pid, cols in per_pano_cols.items()}
+    return (
+        np.concatenate(all_points, axis=0),
+        np.concatenate(all_colors, axis=0) if all_colors else None,
+        consolidated_pts,
+        consolidated_cols,
+    )
 
 
 

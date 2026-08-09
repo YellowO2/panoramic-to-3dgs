@@ -102,7 +102,7 @@ pipeline = Pipeline(config)
 
 # Generate splats for one target pano:
 pipeline.run(
-    panorama_paths=["data/inputs/scene/pano_target.jpg"],
+    target_appearance_path="data/inputs/scene/pano_target.jpg",
     output_dir="data/outputs/scene",
 )
 ```
@@ -111,17 +111,45 @@ Or run the example entry point: `python main.py`.
 
 ### Supporting panoramas (depth-only context)
 
-Pass extra nearby panoramas alongside the target. They contribute translation baselines so DA3 produces a better depth/pose estimate, but they do **not** get turned into Gaussians.
+Pass extra nearby panoramas via `support_paths`. They contribute translation baselines so DA3 produces a better depth/pose estimate, but they do **not** get turned into Gaussians.
 
 ```python
 pipeline.run(
-    panorama_paths=[target, support_1, support_2, support_3],
-    target_pano_id=0,                # which entry in panorama_paths is the target
+    target_appearance_path=target,
+    support_paths=[support_1, support_2, support_3],
     output_dir="data/outputs/scene",
 )
 ```
 
-DA3 sees all panos jointly; SHARP only runs on the target.
+DA3 sees the target + supports jointly; SHARP only runs on the target.
+
+### Edited target images (relit/cleaned)
+
+If `target_appearance_path` has been edited (e.g. day→night relighting, object removal) DA3 may struggle to match features against it. Pass the original, unedited image via `target_depth_path` so DA3 still gets a clean geometry source while SHARP paints the edited one:
+
+```python
+pipeline.run(
+    target_appearance_path="data/inputs/scene/pano_target_relit.jpg",
+    target_depth_path="data/inputs/scene/pano_target.jpg",
+    support_paths=[support_1, support_2],
+    output_dir="data/outputs/scene",
+)
+```
+
+### DA3-only point cloud (no SHARP/Gaussians)
+
+For use cases where a raw, colored point cloud is more useful than a Gaussian splat (e.g. voxelizing/low-poly art instead of photoreal rendering), skip SHARP entirely. Target + support panos are merged into one point cloud, using DA3's own multi-view pose consensus to line them up:
+
+```python
+points, colors = pipeline.run_da3_pointcloud(
+    target_depth_path="data/inputs/scene/pano_target.jpg",
+    support_paths=[support_1, support_2],
+    output_dir="data/outputs/scene",
+)
+```
+Saves `da3_pointcloud.ply` in `output_dir` and returns the same data as `(N, 3)` arrays.
+
+To get the DA3 point cloud *alongside* a full 3DGS run (instead of on its own), pass `save_da3_pointcloud=True` to `.run()` — it saves the same merged cloud as `da3_pointcloud.ply` next to `final_output.ply`.
 
 ## Input format
 
