@@ -36,35 +36,43 @@ def lonlat2xyz(lonlat):
     return np.concatenate([x, y, z], axis=-1)
 
 
-def rotate_equirectangular(img, roll: float, pitch: float):
-    """Rotate an equirectangular image about its own center: `pitch` about the
-    right/X axis, `roll` about the forward/Z axis, both in radians. Casts each
-    output pixel to a sphere direction, rotates it, casts back to a source
-    pixel, and remaps.
+def rotate_equirectangular(img, heading: float, roll: float, pitch: float):
+    """Rotate an equirectangular image about its own center: `pitch` (nose
+    up/down) and `roll` (side to side), both relative to the vehicle's own
+    direction of travel (`heading`), all in radians. Casts each output pixel
+    to a sphere direction, rotates it, casts back to a source pixel, and
+    remaps.
+
+    `heading` matters because the image's own lon=0 axis is north-referenced,
+    not the vehicle's forward direction — pitch/roll must be applied about
+    axes rotated by heading, not the image's fixed lon=0/lon=90 axes.
 
     Used to correct for a panorama's own upright-correction tilt (e.g. from
     Street View's pitch/roll metadata) before slicing it into perspective
     views, so slices show a level-looking ground instead of one tilted by the
     local road grade.
     """
-    height, width = img.shape[:2]
+    height_px, width = img.shape[:2]
     x = np.arange(width)
-    y = np.arange(height)
+    y = np.arange(height_px)
     x, y = np.meshgrid(x, y)
     XY = np.stack([x, y], axis=-1).astype(np.float32)
     lonlat_out = np.stack(
         [
             (XY[..., 0] / (width - 1) - 0.5) * (2 * np.pi),
-            (XY[..., 1] / (height - 1) - 0.5) * np.pi,
+            (XY[..., 1] / (height_px - 1) - 0.5) * np.pi,
         ],
         axis=-1,
     )
     xyz_out = lonlat2xyz(lonlat_out)
 
-    x_axis = np.array([1.0, 0.0, 0.0], np.float32)
-    z_axis = np.array([0.0, 0.0, 1.0], np.float32)
-    R_pitch, _ = cv2.Rodrigues(x_axis * pitch)
-    R_roll, _ = cv2.Rodrigues(z_axis * roll)
+    y_axis = np.array([0.0, 1.0, 0.0], np.float32)
+    R_heading, _ = cv2.Rodrigues(y_axis * heading)
+    forward_local = R_heading @ np.array([0.0, 0.0, 1.0], np.float32)
+    right_local = R_heading @ np.array([1.0, 0.0, 0.0], np.float32)
+
+    R_pitch, _ = cv2.Rodrigues(right_local * pitch)
+    R_roll, _ = cv2.Rodrigues(forward_local * roll)
     R = R_roll @ R_pitch
 
     xyz_src = xyz_out @ R
