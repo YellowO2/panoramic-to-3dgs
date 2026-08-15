@@ -115,14 +115,7 @@ class DA3Model:
         Runs multi-view inference, filters out views that deviate from expected
         shared center and yaw/pitch values, and returns the cleaned result.
         """
-        if not views: return [], DA3Result({}, None)
-
-        prediction = self.model.inference(
-            [v.path for v in views],
-            export_format="mini_npz",
-        )
-        per_pano = self._compute_pano_consensus(views, prediction)
-        return self._filter_at_threshold(views, prediction, per_pano, dist_thresh, angle_thresh)
+        return self.process_views_sweep(views, [(dist_thresh, angle_thresh)])[0]
 
     def process_views_sweep(self, views: list[View], threshold_levels: list[tuple[float, float]]):
         """Debug/diagnostic helper: runs the multi-view inference forward pass
