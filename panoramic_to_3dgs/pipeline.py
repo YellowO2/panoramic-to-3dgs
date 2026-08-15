@@ -326,3 +326,35 @@ class Pipeline:
 
         print(f"DA3 filter sweep complete: {sum(p is not None for p in out_paths)}/{len(threshold_levels)} levels produced output")
         return out_paths
+
+    def score_candidates(
+        self,
+        candidate_paths: list[str],
+        dist_thresh: float = 0.2,
+        angle_thresh: float = 1,
+    ) -> list[int]:
+        """Solo self-consistency score for each candidate pano: extract just
+        that pano's own ~18 DA3 view-slices and run them through DA3 alone (no
+        other pano in the batch), then count how many survive the consensus
+        filter. One DA3Model load shared across all candidates -- each
+        candidate only costs one small forward pass, not a full model reload.
+
+        Used to rank support-pano candidates by how internally coherent DA3
+        finds them, before picking which ones to actually reconstruct with,
+        instead of picking by raw distance alone.
+
+        Returns one keep-count per candidate, same order as candidate_paths.
+        """
+        cfg = self.config
+        da3 = DA3Model(cfg.da3_model)
+        scores = []
+        with tempfile.TemporaryDirectory() as views_base:
+            for i, path in enumerate(candidate_paths):
+                da3_dir = os.path.join(views_base, f"score_{i}")
+                os.makedirs(da3_dir, exist_ok=True)
+                views = extract_views_for_da3(path, da3_dir, prefix=f"score_{i}_", pano_id=0)
+                filtered_views, _ = da3.process_views(views, dist_thresh=dist_thresh, angle_thresh=angle_thresh)
+                scores.append(len(filtered_views))
+        del da3
+        torch.cuda.empty_cache()
+        return scores
