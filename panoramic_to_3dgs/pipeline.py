@@ -275,3 +275,54 @@ class Pipeline:
         Saver.save_point_cloud(pts, final_path, colors=cols)
         print(f"DA3 point cloud pipeline complete: {final_path}")
         return pts, cols
+
+    def run_da3_pointcloud_sweep(
+        self,
+        target_depth_path: str,
+        output_dir: str,
+        threshold_levels: list[tuple[float, float]],
+        support_paths: list[str] | None = None,
+    ) -> list[str | None]:
+        """Debug/diagnostic variant of run_da3_pointcloud: runs DA3 inference
+        once and saves one point cloud per (dist_thresh, angle_thresh) pair in
+        threshold_levels, to compare how much the consensus filter actually
+        matters without paying for a repeated GPU forward pass per level.
+
+        Returns one path per threshold level (None for a level where no views
+        survived), same order as threshold_levels.
+        """
+        cfg = self.config
+        support_paths = support_paths or []
+        print(
+            f"Starting DA3 filter sweep ({len(threshold_levels)} levels) for "
+            f"target + {len(support_paths)} support panoramas"
+        )
+
+        os.makedirs(output_dir, exist_ok=True)
+
+        with tempfile.TemporaryDirectory() as views_base:
+            all_views = []
+            for i, path in enumerate([target_depth_path, *support_paths]):
+                da3_dir = os.path.join(views_base, f"views_pano_{i}_da3")
+                os.makedirs(da3_dir, exist_ok=True)
+                all_views.extend(extract_views_for_da3(path, da3_dir, prefix=f"pano_{i}_", pano_id=i))
+
+            da3 = DA3Model(cfg.da3_model)
+            results = da3.process_views_sweep(all_views, threshold_levels)
+            del da3
+            torch.cuda.empty_cache()
+
+        out_paths = []
+        for (dist_thresh, angle_thresh), (filtered_views, da3_result) in zip(threshold_levels, results):
+            if not filtered_views:
+                print(f"Sweep level dist={dist_thresh} angle={angle_thresh}: no views survived, skipping.")
+                out_paths.append(None)
+                continue
+            pts, cols, _, _ = backproject_views_to_pcd(filtered_views, da3_result)
+            name = f"da3_pointcloud_d{dist_thresh}_a{angle_thresh}.ply"
+            path = os.path.join(output_dir, name)
+            Saver.save_point_cloud(pts, path, colors=cols)
+            out_paths.append(path)
+
+        print(f"DA3 filter sweep complete: {sum(p is not None for p in out_paths)}/{len(threshold_levels)} levels produced output")
+        return out_paths
