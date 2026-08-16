@@ -57,16 +57,25 @@ def save_da3_pointcloud(points: np.ndarray, colors: np.ndarray, path: str) -> st
     return path
 
 
-def _solo_score(da3: "DA3Model", path: str, tag: str, views_base: str, dist_thresh: float, angle_thresh: float) -> int:
+def _solo_score(da3: "DA3Model", path: str, tag: str, views_base: str, dist_thresh: float, angle_thresh: float, step_degrees: int = 20) -> int:
     """Extract one candidate's own ~18 DA3 view-slices and score it alone (no
     other pano in the batch) via the given already-loaded DA3Model, returning
     how many views survive the consensus filter. Shared by score_candidates
     and run_windowed_reconstruction, so both use the exact same scoring
     logic regardless of whether they load their own DA3Model for one call or
-    reuse one across many calls in a single GPU session."""
+    reuse one across many calls in a single GPU session.
+
+    step_degrees: matters more than it might look -- a candidate's keep-rate
+    depends on its own per-pano consensus (median center, mean rotation
+    across its own slices), and fewer slices makes that consensus noisier,
+    not just less redundant. Scoring at a different step than the actual
+    reconstruction call risks a mismatch (a candidate whose consensus is
+    robust at 18 slices might not be at 8), so this should generally match
+    whatever step_degrees the caller's reconstruction step uses.
+    """
     d = os.path.join(views_base, tag)
     os.makedirs(d, exist_ok=True)
-    views = extract_views_for_da3(path, d, prefix=f"{tag}_", pano_id=0)
+    views = extract_views_for_da3(path, d, prefix=f"{tag}_", pano_id=0, step_degrees=step_degrees)
     filtered_views, _ = da3.process_views(views, dist_thresh=dist_thresh, angle_thresh=angle_thresh)
     return len(filtered_views)
 
@@ -418,6 +427,7 @@ class Pipeline:
         candidate_paths: list[str],
         dist_thresh: float = 0.2,
         angle_thresh: float = 1,
+        step_degrees: int = 20,
     ) -> list[int]:
         """Solo self-consistency score for each candidate pano: extract just
         that pano's own ~18 DA3 view-slices and run them through DA3 alone (no
@@ -429,13 +439,18 @@ class Pipeline:
         finds them, before picking which ones to actually reconstruct with,
         instead of picking by raw distance alone.
 
+        step_degrees: see _solo_score -- should generally match whatever
+        step_degrees the caller's later reconstruction call uses, since a
+        candidate's consensus robustness (and therefore its score) shifts
+        with slice count.
+
         Returns one keep-count per candidate, same order as candidate_paths.
         """
         cfg = self.config
         da3 = DA3Model(cfg.da3_model)
         with tempfile.TemporaryDirectory() as views_base:
             scores = [
-                _solo_score(da3, path, f"score_{i}", views_base, dist_thresh, angle_thresh)
+                _solo_score(da3, path, f"score_{i}", views_base, dist_thresh, angle_thresh, step_degrees=step_degrees)
                 for i, path in enumerate(candidate_paths)
             ]
         del da3
