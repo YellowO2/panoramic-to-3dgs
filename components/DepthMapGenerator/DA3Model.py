@@ -5,9 +5,10 @@ from depth_anything_3.api import DepthAnything3
 from datatype import View
 
 class DA3Result:
-    def __init__(self, pano_poses, prediction):
+    def __init__(self, pano_poses, prediction, pano_keep_counts=None):
         self.pano_poses = pano_poses # pano_id -> {center, rotation}
         self.prediction = prediction # Filtered DA3 Prediction object
+        self.pano_keep_counts = pano_keep_counts or {} # pano_id -> (kept, total)
 
 class DA3Model:
     def __init__(self, model_path="./models/models--depth-anything--DA3NESTED-GIANT-LARGE-1.1/snapshots/b2359bdf726fb44ef62acca04d629dcf158053e7", device="cuda"):
@@ -73,6 +74,7 @@ class DA3Model:
         against the same inference result (see process_views_sweep)."""
         keep_indices = []
         final_pano_poses = {}
+        pano_keep_counts = {}
         snapped_extrinsics = prediction.extrinsics.copy()
 
         for pano_id, data in per_pano.items():
@@ -95,6 +97,7 @@ class DA3Model:
                     snapped_extrinsics[pv['idx'], :3, :3] = R_snapped
                     snapped_extrinsics[pv['idx'], :3, 3] = (-R_snapped @ data['center'].reshape(3, 1)).flatten()
 
+            pano_keep_counts[pano_id] = (len(pano_keep), len(data['per_view']))
             cx, cy, cz = data['center']
             print(f"  pano {pano_id}: kept {len(pano_keep)}/{len(data['per_view'])}, center=({cx:.3f}, {cy:.3f}, {cz:.3f})")
 
@@ -111,7 +114,7 @@ class DA3Model:
             filtered_pred.processed_images = [prediction.processed_images[i] for i in keep_indices]
 
         print(f"Cleaned scene: Kept {len(filtered_views)}/{len(views)} views. (dist_thresh={dist_thresh}, angle_thresh={angle_thresh})")
-        return filtered_views, DA3Result(final_pano_poses, filtered_pred)
+        return filtered_views, DA3Result(final_pano_poses, filtered_pred, pano_keep_counts)
 
     def process_views(self, views: list[View], dist_thresh=0.2, angle_thresh=1):
         """
