@@ -358,3 +358,33 @@ class Pipeline:
         del da3
         torch.cuda.empty_cache()
         return scores
+
+    def run_da3_pointcloud_with_poses(
+        self,
+        target_depth_path: str,
+        support_paths: list[str] | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, dict]:
+        """Same DA3-only reconstruction as run_da3_pointcloud, but returns raw
+        (points, colors, pano_poses) instead of writing straight to a ply.
+
+        pano_poses is da3_result.pano_poses: pano_id -> {'center', 'rotation'},
+        where pano_id is the index into [target_depth_path, *support_paths].
+        For a caller that needs to rigid-align two independently-reconstructed
+        batches via a shared image between them (e.g. street_builder's
+        windowed chain reconstruction), that image's pose in each batch's own
+        frame is exactly what's needed to solve for the transform -- hence
+        returning poses instead of only the merged, un-transformable ply.
+        """
+        cfg = self.config
+        support_paths = support_paths or []
+
+        with tempfile.TemporaryDirectory() as views_base:
+            _, da3_result, pts, cols, _, _ = _run_da3(target_depth_path, support_paths, cfg, views_base)
+
+        if pts is None:
+            raise RuntimeError(
+                "No usable views survived DA3 filtering "
+                "(check the 'Filtering view ...' logs above for dist/angle deviation)."
+            )
+
+        return pts, cols, da3_result.pano_poses
