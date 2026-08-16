@@ -369,32 +369,140 @@ class Pipeline:
         torch.cuda.empty_cache()
         return scores
 
-    def run_da3_pointcloud_with_poses(
+    def run_windowed_reconstruction(
         self,
-        target_depth_path: str,
-        support_paths: list[str] | None = None,
-    ) -> tuple[np.ndarray, np.ndarray, dict]:
-        """Same DA3-only reconstruction as run_da3_pointcloud, but returns raw
-        (points, colors, pano_poses) instead of writing straight to a ply.
+        windows: list[list[tuple[str, str, float, float]]],
+        boundary_coords: list[tuple[float, float]],
+        final_count: int = 4,
+        forced_overlap: int = 2,
+        dist_thresh: float = 0.2,
+        angle_thresh: float = 1,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Chunk+connect multi-window DA3 reconstruction, entirely within ONE
+        DA3Model load reused across every window's scoring AND reconstruction.
 
-        pano_poses is da3_result.pano_poses: pano_id -> {'center', 'rotation'},
-        where pano_id is the index into [target_depth_path, *support_paths].
-        For a caller that needs to rigid-align two independently-reconstructed
-        batches via a shared image between them (e.g. street_builder's
-        windowed chain reconstruction), that image's pose in each batch's own
-        frame is exactly what's needed to solve for the transform -- hence
-        returning poses instead of only the merged, un-transformable ply.
+        This consolidation matters specifically on ZeroGPU: each separate
+        @spaces.GPU call is its own fresh GPU acquisition (and, since this
+        package's Pipeline doesn't cache a DA3Model across calls, a fresh
+        ~35GB model reload). Calling per-window helpers (what used to be
+        score_candidates + run_da3_pointcloud_with_poses) separately, once per
+        window, from the caller side hit ZeroGPU's proxy-token lifetime after
+        only 2 windows (4 sequential GPU calls) in practice -- hence this
+        single entry point doing the whole multi-window job in one GPU call.
+
+        windows: one list per window, each entry (label, path, lat, lon) --
+        candidates already downloaded, from whatever domain-specific source
+        (street_builder's Google/Apple pool gathering, in the current caller;
+        this package has no dependency on that -- it just needs path+coords).
+
+        boundary_coords: len(windows)-1; boundary_coords[i] = the (lat, lon)
+        of the node shared between window i and window i+1, used to decide
+        which of window i's winners get carried forward into window i+1 as
+        forced overlap.
+
+        Per window: solo-scores every candidate (self-consistency keep-rate,
+        see DA3Model.process_views) and picks the top final_count -- except
+        forced_overlap of them (for every window after the first), which are
+        forced to be the previous window's own winners closest to that
+        window's boundary node. That forcing does two things at once:
+        guarantees those slots are already-vetted good nodes, and guarantees
+        the two windows share a literal identical image, which is what makes
+        rigid alignment between them valid at all. Runs DA3 on each window's
+        winners, rigid-aligns (rotation+translation only -- DA3's metric scale
+        is trusted consistent within this one session, so no scale term is
+        solved for) onto a running global frame anchored on the first window,
+        via the shared images' poses in both windows, and merges.
+
+        Returns (points, colors) merged across all windows in that global
+        frame.
         """
+        from math import atan2, cos, radians, sin, sqrt
+
+        from scipy.spatial.transform import Rotation
+
         cfg = self.config
-        support_paths = support_paths or []
+        da3 = DA3Model(cfg.da3_model)
 
-        with tempfile.TemporaryDirectory() as views_base:
-            _, da3_result, pts, cols, _, _ = _run_da3(target_depth_path, support_paths, cfg, views_base)
+        def _haversine_m(lat1, lon1, lat2, lon2):
+            earth_radius_m = 6371000.0
+            dlat, dlon = radians(lat2 - lat1), radians(lon2 - lon1)
+            a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
+            return 2 * earth_radius_m * atan2(sqrt(a), sqrt(1 - a))
 
-        if pts is None:
-            raise RuntimeError(
-                "No usable views survived DA3 filtering "
-                "(check the 'Filtering view ...' logs above for dist/angle deviation)."
-            )
+        def _rigid_align(shared_from, shared_to):
+            Rs, ts = [], []
+            for (c_from, r_from), (c_to, r_to) in zip(shared_from, shared_to):
+                R = r_to @ r_from.T
+                Rs.append(R)
+                ts.append(c_to - R @ c_from)
+            quats = np.array([Rotation.from_matrix(R).as_quat() for R in Rs])
+            quats *= np.sign(quats @ quats[0])[:, None]
+            return Rotation.from_quat(quats.mean(axis=0)).as_matrix(), np.mean(ts, axis=0)
 
-        return pts, cols, da3_result.pano_poses
+        global_pts = global_cols = None
+        global_R, global_t = np.eye(3), np.zeros(3)
+        prev_winners = prev_poses = None
+
+        try:
+            with tempfile.TemporaryDirectory() as views_base:
+                for window_idx, pool in enumerate(windows):
+                    scores = []
+                    for i, (label, path, lat, lon) in enumerate(pool):
+                        d = os.path.join(views_base, f"w{window_idx}_score{i}")
+                        os.makedirs(d, exist_ok=True)
+                        views = extract_views_for_da3(path, d, prefix=f"w{window_idx}_score{i}_", pano_id=0)
+                        filtered, _ = da3.process_views(views, dist_thresh=dist_thresh, angle_thresh=angle_thresh)
+                        scores.append(len(filtered))
+                    ranked = [c for c, _ in sorted(zip(pool, scores), key=lambda x: x[1], reverse=True)]
+                    print(f"Window {window_idx} candidate scores: {list(zip((c[0] for c in pool), scores))}")
+
+                    if prev_winners is None:
+                        winners = ranked[:final_count]
+                        forced_paths = []
+                    else:
+                        b_lat, b_lon = boundary_coords[window_idx - 1]
+                        forced = sorted(prev_winners, key=lambda c: _haversine_m(b_lat, b_lon, c[2], c[3]))[:forced_overlap]
+                        forced_paths = [c[1] for c in forced]
+                        new_picks = [c for c in ranked if c[1] not in forced_paths][:final_count - len(forced)]
+                        winners = forced + new_picks
+
+                    if len(winners) < 2:
+                        raise RuntimeError(f"Window {window_idx} has too few usable candidates for multi-view reconstruction.")
+                    print(f"Window {window_idx} reconstructing with: {[c[0] for c in winners]}")
+
+                    all_views = []
+                    for i, (label, path, lat, lon) in enumerate(winners):
+                        d = os.path.join(views_base, f"w{window_idx}_pano{i}")
+                        os.makedirs(d, exist_ok=True)
+                        all_views.extend(extract_views_for_da3(path, d, prefix=f"w{window_idx}_pano{i}_", pano_id=i))
+                    filtered_views, da3_result = da3.process_views(all_views, dist_thresh=dist_thresh, angle_thresh=angle_thresh)
+                    if not filtered_views:
+                        raise RuntimeError(f"Window {window_idx}: no views survived DA3 filtering.")
+                    pts, cols, _, _ = backproject_views_to_pcd(filtered_views, da3_result)
+                    pano_poses = da3_result.pano_poses
+
+                    if window_idx == 0:
+                        global_pts, global_cols = pts, cols
+                    else:
+                        this_idx = {c[1]: i for i, c in enumerate(winners)}
+                        prev_idx = {c[1]: i for i, c in enumerate(prev_winners)}
+                        try:
+                            shared_from = [(pano_poses[this_idx[p]]["center"], pano_poses[this_idx[p]]["rotation"]) for p in forced_paths]
+                            shared_to = [(prev_poses[prev_idx[p]]["center"], prev_poses[prev_idx[p]]["rotation"]) for p in forced_paths]
+                        except KeyError:
+                            raise RuntimeError(
+                                f"Window {window_idx}: a forced overlap anchor's views were entirely "
+                                "filtered out by DA3's consensus check in one of the two windows, so "
+                                "there's no pose to align on."
+                            )
+                        local_R, local_t = _rigid_align(shared_from, shared_to)
+                        global_R, global_t = global_R @ local_R, global_R @ local_t + global_t
+                        global_pts = np.concatenate([global_pts, pts @ global_R.T + global_t], axis=0)
+                        global_cols = np.concatenate([global_cols, cols], axis=0)
+
+                    prev_winners, prev_poses = winners, pano_poses
+        finally:
+            del da3
+            torch.cuda.empty_cache()
+
+        return global_pts, global_cols
