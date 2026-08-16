@@ -75,7 +75,7 @@ def _solo_score(da3: "DA3Model", path: str, tag: str, views_base: str, dist_thre
     """
     d = os.path.join(views_base, tag)
     os.makedirs(d, exist_ok=True)
-    views = extract_views_for_da3(path, d, prefix=f"{tag}_", pano_id=0, step_degrees=step_degrees)
+    views = extract_views_for_da3(path, d, prefix=f"{tag}_", pano_id=os.path.basename(path), step_degrees=step_degrees)
     filtered_views, _ = da3.process_views(views, dist_thresh=dist_thresh, angle_thresh=angle_thresh)
     return len(filtered_views)
 
@@ -112,7 +112,7 @@ def _run_da3(
     for i, path in enumerate([target_depth_path, *support_paths]):
         da3_dir = os.path.join(views_base, f"views_pano_{i}_da3")
         os.makedirs(da3_dir, exist_ok=True)
-        all_views.extend(extract_views_for_da3(path, da3_dir, prefix=f"pano_{i}_", pano_id=i, step_degrees=step_degrees))
+        all_views.extend(extract_views_for_da3(path, da3_dir, prefix=f"pano_{i}_", pano_id=os.path.basename(path), step_degrees=step_degrees))
 
     owns_da3 = da3 is None
     if owns_da3:
