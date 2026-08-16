@@ -16,6 +16,37 @@ from sharp.utils.gaussians import Gaussians3D, save_ply
 from panoramic_to_3dgs.config import PipelineConfig
 
 
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in meters. Used by run_windowed_reconstruction
+    (forced-overlap selection by distance to a window's boundary node) and
+    run_windowed_reconstruction_full_pool (not directly, but kept alongside
+    _rigid_align since both windowed-reconstruction variants need it)."""
+    from math import atan2, cos, radians, sin, sqrt
+
+    earth_radius_m = 6371000.0
+    dlat, dlon = radians(lat2 - lat1), radians(lon2 - lon1)
+    a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
+    return 2 * earth_radius_m * atan2(sqrt(a), sqrt(1 - a))
+
+
+def _rigid_align(shared_from: list[tuple[np.ndarray, np.ndarray]], shared_to: list[tuple[np.ndarray, np.ndarray]]) -> tuple[np.ndarray, np.ndarray]:
+    """Average rigid transform (R, t) mapping the 'from' frame onto the 'to'
+    frame, given 1+ shared anchor poses (center, rotation) expressed in both.
+    Rotation averaged via quaternion mean, translation directly -- used by
+    both run_windowed_reconstruction and run_windowed_reconstruction_full_pool
+    to align one window's DA3 output onto the previous window's frame."""
+    from scipy.spatial.transform import Rotation
+
+    Rs, ts = [], []
+    for (c_from, r_from), (c_to, r_to) in zip(shared_from, shared_to):
+        R = r_to @ r_from.T
+        Rs.append(R)
+        ts.append(c_to - R @ c_from)
+    quats = np.array([Rotation.from_matrix(R).as_quat() for R in Rs])
+    quats *= np.sign(quats @ quats[0])[:, None]
+    return Rotation.from_quat(quats.mean(axis=0)).as_matrix(), np.mean(ts, axis=0)
+
+
 def save_da3_pointcloud(points: np.ndarray, colors: np.ndarray, path: str) -> str:
     """Thin public wrapper over components.Saver -- for callers outside this
     package (e.g. street_builder's windowed reconstruction, which transforms
@@ -458,28 +489,8 @@ class Pipeline:
         Returns (points, colors) merged across all windows in that global
         frame.
         """
-        from math import atan2, cos, radians, sin, sqrt
-
-        from scipy.spatial.transform import Rotation
-
         cfg = self.config
         da3 = DA3Model(cfg.da3_model)
-
-        def _haversine_m(lat1, lon1, lat2, lon2):
-            earth_radius_m = 6371000.0
-            dlat, dlon = radians(lat2 - lat1), radians(lon2 - lon1)
-            a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
-            return 2 * earth_radius_m * atan2(sqrt(a), sqrt(1 - a))
-
-        def _rigid_align(shared_from, shared_to):
-            Rs, ts = [], []
-            for (c_from, r_from), (c_to, r_to) in zip(shared_from, shared_to):
-                R = r_to @ r_from.T
-                Rs.append(R)
-                ts.append(c_to - R @ c_from)
-            quats = np.array([Rotation.from_matrix(R).as_quat() for R in Rs])
-            quats *= np.sign(quats @ quats[0])[:, None]
-            return Rotation.from_quat(quats.mean(axis=0)).as_matrix(), np.mean(ts, axis=0)
 
         global_pts = global_cols = None
         global_R, global_t = np.eye(3), np.zeros(3)
@@ -544,6 +555,97 @@ class Pipeline:
                         global_cols = np.concatenate([global_cols, cols], axis=0)
 
                     prev_winners, prev_poses = winners, pano_poses
+        finally:
+            del da3
+            torch.cuda.empty_cache()
+
+        return global_pts, global_cols
+
+    def run_windowed_reconstruction_full_pool(
+        self,
+        windows: list[list[tuple[str, str, float, float]]],
+        dist_thresh: float = 0.2,
+        angle_thresh: float = 1,
+        step_degrees: int = 20,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Chunk+connect variant of run_windowed_reconstruction that skips
+        solo-scoring and down-selection entirely: every window's FULL
+        candidate list goes straight into that window's DA3 call. Tests
+        whether picking only the top-scoring candidates (what
+        run_windowed_reconstruction does) is actually necessary once
+        windowing has already bounded each window to a tight geographic
+        range, or whether that range alone is enough.
+
+        windows: one list per window, each entry (label, path, lat, lon) --
+        same shape as run_windowed_reconstruction, but every entry here goes
+        into the reconstruction, none are scored or dropped.
+
+        Alignment between window i and i+1 doesn't need an explicit forced-
+        carryover step like run_windowed_reconstruction's: since adjacent
+        windows are constructed to share one raw chain node (see the
+        caller), and both windows' full candidate lists independently
+        include that node's own image and its nearest-K neighbors, those
+        candidates already appear in both windows' lists by construction --
+        matched here by path. Alignment uses whichever of those naturally-
+        shared candidates (by path) have valid poses in both windows' DA3
+        results; as few as 1 is enough for a full rigid solve, so this only
+        fails if literally none of them survive DA3's filter in both.
+
+        Returns (points, colors) merged across all windows in one global
+        frame.
+        """
+        cfg = self.config
+        da3 = DA3Model(cfg.da3_model)
+
+        global_pts = global_cols = None
+        global_R, global_t = np.eye(3), np.zeros(3)
+        prev_pool = prev_poses = None
+
+        try:
+            with tempfile.TemporaryDirectory() as views_base:
+                for window_idx, pool in enumerate(windows):
+                    print(f"Window {window_idx} reconstructing with full pool ({len(pool)}): {[c[0] for c in pool]}")
+
+                    window_views_dir = os.path.join(views_base, f"w{window_idx}_recon")
+                    os.makedirs(window_views_dir, exist_ok=True)
+                    filtered_views, da3_result, pts, cols, _, _ = _run_da3(
+                        pool[0][1],
+                        [c[1] for c in pool[1:]],
+                        cfg,
+                        window_views_dir,
+                        da3=da3,
+                        dist_thresh=dist_thresh,
+                        angle_thresh=angle_thresh,
+                        step_degrees=step_degrees,
+                    )
+                    if not filtered_views:
+                        raise RuntimeError(f"Window {window_idx}: no views survived DA3 filtering.")
+                    pano_poses = da3_result.pano_poses
+
+                    if window_idx == 0:
+                        global_pts, global_cols = pts, cols
+                    else:
+                        this_idx = {c[1]: i for i, c in enumerate(pool)}
+                        prev_idx = {c[1]: i for i, c in enumerate(prev_pool)}
+                        shared_from, shared_to = [], []
+                        for path in this_idx:
+                            if path not in prev_idx:
+                                continue
+                            ti, pi = this_idx[path], prev_idx[path]
+                            if ti in pano_poses and pi in prev_poses:
+                                shared_from.append((pano_poses[ti]["center"], pano_poses[ti]["rotation"]))
+                                shared_to.append((prev_poses[pi]["center"], prev_poses[pi]["rotation"]))
+                        if not shared_from:
+                            raise RuntimeError(
+                                f"Window {window_idx}: none of the candidates shared with the previous "
+                                "window survived DA3's consensus check in both, so there's no pose to align on."
+                            )
+                        local_R, local_t = _rigid_align(shared_from, shared_to)
+                        global_R, global_t = global_R @ local_R, global_R @ local_t + global_t
+                        global_pts = np.concatenate([global_pts, pts @ global_R.T + global_t], axis=0)
+                        global_cols = np.concatenate([global_cols, cols], axis=0)
+
+                    prev_pool, prev_poses = pool, pano_poses
         finally:
             del da3
             torch.cuda.empty_cache()
