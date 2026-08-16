@@ -16,6 +16,16 @@ from sharp.utils.gaussians import Gaussians3D, save_ply
 from panoramic_to_3dgs.config import PipelineConfig
 
 
+def save_da3_pointcloud(points: np.ndarray, colors: np.ndarray, path: str) -> str:
+    """Thin public wrapper over components.Saver -- for callers outside this
+    package (e.g. street_builder's windowed reconstruction, which transforms
+    and merges several run_da3_pointcloud_with_poses results before saving
+    one final output) that need to save a raw point cloud without reaching
+    into this package's internal components.* modules directly."""
+    Saver.save_point_cloud(points, path, colors=colors)
+    return path
+
+
 def _run_da3(target_depth_path: str, support_paths: list[str], cfg: "PipelineConfig", views_base: str):
     """Run the entire DA3 side of the pipeline: slice target + support panos
     into views, run DA3's joint multi-view pose+depth inference, and
