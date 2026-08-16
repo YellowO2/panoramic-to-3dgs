@@ -48,6 +48,7 @@ def _run_da3(
     da3: "DA3Model | None" = None,
     dist_thresh: float = 0.2,
     angle_thresh: float = 1,
+    step_degrees: int = 20,
 ):
     """Run the entire DA3 side of the pipeline: slice target + support panos
     into views, run DA3's joint multi-view pose+depth inference, and
@@ -59,12 +60,19 @@ def _run_da3(
     of these calls in one GPU session and would otherwise reload the model
     each time. Default None preserves the original behavior (load, use,
     delete) for every other caller.
+
+    step_degrees: yaw spacing between slices (default 20 -- matches
+    extract_views_for_da3's own default, i.e. 18 slices/pano at 90 HFOV,
+    ~78% overlap between neighbors). Coarser values (e.g. 45 -> 8
+    slices/pano) trade per-pano slice redundancy for a lower image count at
+    the same viewpoint coverage -- exposed for experimenting with that
+    tradeoff, not used by default anywhere.
     """
     all_views = []
     for i, path in enumerate([target_depth_path, *support_paths]):
         da3_dir = os.path.join(views_base, f"views_pano_{i}_da3")
         os.makedirs(da3_dir, exist_ok=True)
-        all_views.extend(extract_views_for_da3(path, da3_dir, prefix=f"pano_{i}_", pano_id=i))
+        all_views.extend(extract_views_for_da3(path, da3_dir, prefix=f"pano_{i}_", pano_id=i, step_degrees=step_degrees))
 
     owns_da3 = da3 is None
     if owns_da3:
@@ -281,6 +289,7 @@ class Pipeline:
         target_depth_path: str,
         output_dir: str,
         support_paths: list[str] | None = None,
+        step_degrees: int = 20,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Run only the DA3 half of the pipeline: no SHARP, no Gaussians.
 
@@ -292,6 +301,10 @@ class Pipeline:
         Useful as raw material for non-photoreal art (voxel grids, low-poly
         meshing, etc.) instead of a full Gaussian splat, where DA3's point
         cloud alone is easier to control than SHARP's splats.
+
+        step_degrees: see _run_da3 -- default 20 (18 slices/pano) matches
+        prior behavior; exposed here for experimenting with slice
+        density/redundancy vs. image count.
 
         Returns:
             (points, colors): (N, 3) float32 world-space points and (N, 3)
@@ -305,7 +318,7 @@ class Pipeline:
         os.makedirs(output_dir, exist_ok=True)
 
         with tempfile.TemporaryDirectory() as views_base:
-            _, _, pts, cols, _, _ = _run_da3(target_depth_path, support_paths, cfg, views_base)
+            _, _, pts, cols, _, _ = _run_da3(target_depth_path, support_paths, cfg, views_base, step_degrees=step_degrees)
 
         if pts is None:
             raise RuntimeError(
