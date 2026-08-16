@@ -95,7 +95,8 @@ class DA3Model:
                     snapped_extrinsics[pv['idx'], :3, :3] = R_snapped
                     snapped_extrinsics[pv['idx'], :3, 3] = (-R_snapped @ data['center'].reshape(3, 1)).flatten()
 
-            print(f"  pano {pano_id}: kept {len(pano_keep)}/{len(data['per_view'])}")
+            cx, cy, cz = data['center']
+            print(f"  pano {pano_id}: kept {len(pano_keep)}/{len(data['per_view'])}, center=({cx:.3f}, {cy:.3f}, {cz:.3f})")
 
         keep_indices = sorted(keep_indices)
         filtered_views = [views[i] for i in keep_indices]
