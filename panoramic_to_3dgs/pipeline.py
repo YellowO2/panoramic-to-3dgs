@@ -26,24 +26,56 @@ def save_da3_pointcloud(points: np.ndarray, colors: np.ndarray, path: str) -> st
     return path
 
 
-def _run_da3(target_depth_path: str, support_paths: list[str], cfg: "PipelineConfig", views_base: str):
+def _solo_score(da3: "DA3Model", path: str, tag: str, views_base: str, dist_thresh: float, angle_thresh: float) -> int:
+    """Extract one candidate's own ~18 DA3 view-slices and score it alone (no
+    other pano in the batch) via the given already-loaded DA3Model, returning
+    how many views survive the consensus filter. Shared by score_candidates
+    and run_windowed_reconstruction, so both use the exact same scoring
+    logic regardless of whether they load their own DA3Model for one call or
+    reuse one across many calls in a single GPU session."""
+    d = os.path.join(views_base, tag)
+    os.makedirs(d, exist_ok=True)
+    views = extract_views_for_da3(path, d, prefix=f"{tag}_", pano_id=0)
+    filtered_views, _ = da3.process_views(views, dist_thresh=dist_thresh, angle_thresh=angle_thresh)
+    return len(filtered_views)
+
+
+def _run_da3(
+    target_depth_path: str,
+    support_paths: list[str],
+    cfg: "PipelineConfig",
+    views_base: str,
+    da3: "DA3Model | None" = None,
+    dist_thresh: float = 0.2,
+    angle_thresh: float = 1,
+):
     """Run the entire DA3 side of the pipeline: slice target + support panos
     into views, run DA3's joint multi-view pose+depth inference, and
     backproject to world-space points/colors. Shared by run() (depth/scale
-    support for SHARP) and run_da3_pointcloud() (the entire output)."""
+    support for SHARP) and run_da3_pointcloud() (the entire output).
+
+    da3: reuse an already-loaded DA3Model instead of loading (and deleting)
+    a fresh one -- used by run_windowed_reconstruction, which makes several
+    of these calls in one GPU session and would otherwise reload the model
+    each time. Default None preserves the original behavior (load, use,
+    delete) for every other caller.
+    """
     all_views = []
     for i, path in enumerate([target_depth_path, *support_paths]):
         da3_dir = os.path.join(views_base, f"views_pano_{i}_da3")
         os.makedirs(da3_dir, exist_ok=True)
         all_views.extend(extract_views_for_da3(path, da3_dir, prefix=f"pano_{i}_", pano_id=i))
 
-    da3 = DA3Model(cfg.da3_model)
-    filtered_views, da3_result = da3.process_views(all_views)
+    owns_da3 = da3 is None
+    if owns_da3:
+        da3 = DA3Model(cfg.da3_model)
+    filtered_views, da3_result = da3.process_views(all_views, dist_thresh=dist_thresh, angle_thresh=angle_thresh)
     merged_pts, merged_cols, per_pano_pts, per_pano_cols = backproject_views_to_pcd(
         filtered_views, da3_result
     )
-    del da3
-    torch.cuda.empty_cache()
+    if owns_da3:
+        del da3
+        torch.cuda.empty_cache()
     return filtered_views, da3_result, merged_pts, merged_cols, per_pano_pts, per_pano_cols
 
 
@@ -357,14 +389,11 @@ class Pipeline:
         """
         cfg = self.config
         da3 = DA3Model(cfg.da3_model)
-        scores = []
         with tempfile.TemporaryDirectory() as views_base:
-            for i, path in enumerate(candidate_paths):
-                da3_dir = os.path.join(views_base, f"score_{i}")
-                os.makedirs(da3_dir, exist_ok=True)
-                views = extract_views_for_da3(path, da3_dir, prefix=f"score_{i}_", pano_id=0)
-                filtered_views, _ = da3.process_views(views, dist_thresh=dist_thresh, angle_thresh=angle_thresh)
-                scores.append(len(filtered_views))
+            scores = [
+                _solo_score(da3, path, f"score_{i}", views_base, dist_thresh, angle_thresh)
+                for i, path in enumerate(candidate_paths)
+            ]
         del da3
         torch.cuda.empty_cache()
         return scores
@@ -446,13 +475,10 @@ class Pipeline:
         try:
             with tempfile.TemporaryDirectory() as views_base:
                 for window_idx, pool in enumerate(windows):
-                    scores = []
-                    for i, (label, path, lat, lon) in enumerate(pool):
-                        d = os.path.join(views_base, f"w{window_idx}_score{i}")
-                        os.makedirs(d, exist_ok=True)
-                        views = extract_views_for_da3(path, d, prefix=f"w{window_idx}_score{i}_", pano_id=0)
-                        filtered, _ = da3.process_views(views, dist_thresh=dist_thresh, angle_thresh=angle_thresh)
-                        scores.append(len(filtered))
+                    scores = [
+                        _solo_score(da3, path, f"w{window_idx}_score{i}", views_base, dist_thresh, angle_thresh)
+                        for i, (label, path, lat, lon) in enumerate(pool)
+                    ]
                     ranked = [c for c, _ in sorted(zip(pool, scores), key=lambda x: x[1], reverse=True)]
                     print(f"Window {window_idx} candidate scores: {list(zip((c[0] for c in pool), scores))}")
 
@@ -470,15 +496,19 @@ class Pipeline:
                         raise RuntimeError(f"Window {window_idx} has too few usable candidates for multi-view reconstruction.")
                     print(f"Window {window_idx} reconstructing with: {[c[0] for c in winners]}")
 
-                    all_views = []
-                    for i, (label, path, lat, lon) in enumerate(winners):
-                        d = os.path.join(views_base, f"w{window_idx}_pano{i}")
-                        os.makedirs(d, exist_ok=True)
-                        all_views.extend(extract_views_for_da3(path, d, prefix=f"w{window_idx}_pano{i}_", pano_id=i))
-                    filtered_views, da3_result = da3.process_views(all_views, dist_thresh=dist_thresh, angle_thresh=angle_thresh)
+                    window_views_dir = os.path.join(views_base, f"w{window_idx}_recon")
+                    os.makedirs(window_views_dir, exist_ok=True)
+                    filtered_views, da3_result, pts, cols, _, _ = _run_da3(
+                        winners[0][1],
+                        [c[1] for c in winners[1:]],
+                        cfg,
+                        window_views_dir,
+                        da3=da3,
+                        dist_thresh=dist_thresh,
+                        angle_thresh=angle_thresh,
+                    )
                     if not filtered_views:
                         raise RuntimeError(f"Window {window_idx}: no views survived DA3 filtering.")
-                    pts, cols, _, _ = backproject_views_to_pcd(filtered_views, da3_result)
                     pano_poses = da3_result.pano_poses
 
                     if window_idx == 0:
