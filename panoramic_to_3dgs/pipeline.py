@@ -654,7 +654,9 @@ class Pipeline:
         def healthy(da3_result):
             kept_a, total_a = da3_result.pano_keep_counts.get(0, (0, 1))
             kept_b, total_b = da3_result.pano_keep_counts.get(1, (0, 1))
-            return (kept_a / total_a) >= keep_rate_threshold and (kept_b / total_b) >= keep_rate_threshold
+            result = (kept_a / total_a) >= keep_rate_threshold and (kept_b / total_b) >= keep_rate_threshold
+            print(f"    health check: a={kept_a}/{total_a} b={kept_b}/{total_b} threshold={keep_rate_threshold} -> {result} (raw pano_keep_counts={da3_result.pano_keep_counts})")
+            return result
 
         try:
             with tempfile.TemporaryDirectory() as views_base:
@@ -672,6 +674,7 @@ class Pipeline:
                             continue
                         attempts.append(key)
 
+                    print(f"  position {i}: active_key={active_key} attempts={attempts}")
                     committed_key = None
                     for key in attempts:
                         _, path_a, _, _ = node_dicts[i][key]
@@ -686,6 +689,7 @@ class Pipeline:
                             committed_key = key
                             break
 
+                    print(f"  position {i}: committed_key={committed_key}")
                     if committed_key is None:
                         if seg_pts is not None:
                             segments.append((seg_pts, seg_cols, (seg_start, i), active_key))
