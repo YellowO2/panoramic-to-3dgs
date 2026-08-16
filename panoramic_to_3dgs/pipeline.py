@@ -576,6 +576,155 @@ class Pipeline:
 
         return global_pts, global_cols
 
+    def run_greedy_pass_reconstruction(
+        self,
+        node_candidates: list[list[tuple[str, str, str, str, float, float]]],
+        try_order: list[list[tuple[str, str]]],
+        keep_rate_threshold: float = 0.5,
+        max_attempts_per_position: int = 3,
+        dist_thresh: float = 0.2,
+        angle_thresh: float = 1,
+        step_degrees: int = 20,
+    ) -> list[tuple[np.ndarray, np.ndarray, tuple[int, int], tuple[str, str]]]:
+        """Greedy same-capture-pass sliding-window reconstruction, entirely
+        within ONE DA3Model load (same ZeroGPU-consolidation reason as
+        run_windowed_reconstruction).
+
+        Unlike run_windowed_reconstruction (which always uses a solo
+        self-consistency score to pick candidates, then hopes they correlate
+        once combined), every window here is graded by the actual thing that
+        matters: a real 2-candidate DA3 call, checking how many of each
+        side's own view-slices survive the consensus filter. This session
+        found solo score doesn't reliably predict that outcome in either
+        direction, so there's no scoring step to skip here -- the pairwise
+        call IS the grading.
+
+        node_candidates: one list per street node (in order), each entry
+        (source, pass_key, label, path, lat, lon) -- e.g. ("apple",
+        <build_id>, "apple:123", "/path.jpg", 1.23, 103.4) or ("google",
+        "2024-07", "google:abc", "/path.jpg", 1.23, 103.4). (source,
+        pass_key) identifies which capture pass a candidate belongs to;
+        candidates from different nodes with the same (source, pass_key)
+        are treated as the same pass/visit.
+
+        try_order: one list per node, of (source, pass_key) pairs in the
+        order to attempt them when starting a *new* segment at that node --
+        precomputed by the caller from cheap metadata (coverage ranking),
+        not derived here. This method never re-ranks; it only walks forward
+        using whatever order it's given, capped at max_attempts_per_position
+        attempts per position.
+
+        Walk: at each position i, build a 2-node window from node i and
+        node i+1 using the same (source, pass_key) on both sides. If a
+        segment is already in progress, its active pass is tried first
+        (continuity is preferred over switching to a "better" pass, since
+        switching can't be rigid-aligned -- there's no shared image between
+        two different passes). Otherwise (or if the active pass fails or
+        isn't available at this position), try try_order[i]'s passes in
+        order, skipping ones missing at either node, capped at
+        max_attempts_per_position. A window is "healthy" if both sides kept
+        at least keep_rate_threshold of their own view-slices
+        (DA3Result.pano_keep_counts). On success: advance, and if continuing
+        the active pass, rigid-align this window's node-i pose onto where
+        node i was placed in the previous window (the two windows share
+        that exact image). On failure at every attempted pass: close out
+        the current segment (if any) and start a fresh search at i+1.
+
+        Returns a list of segments, each (points, colors, (start_node_idx,
+        end_node_idx), (source, pass_key)) -- deliberately NOT one merged
+        cloud, since a street with no single pass covering it end-to-end is
+        expected to break into disconnected segments, not something to
+        force into one result.
+        """
+        cfg = self.config
+        da3 = DA3Model(cfg.da3_model)
+
+        node_dicts = [
+            {(source, pass_key): (label, path, lat, lon) for source, pass_key, label, path, lat, lon in candidates}
+            for candidates in node_candidates
+        ]
+
+        segments = []
+        seg_pts = seg_cols = None
+        seg_R, seg_t = np.eye(3), np.zeros(3)
+        seg_start = None
+        active_key = None
+        prev_pair_poses = None  # [(center, rotation) for node i, node i+1] of the last committed window
+
+        def healthy(da3_result):
+            kept_a, total_a = da3_result.pano_keep_counts.get(0, (0, 1))
+            kept_b, total_b = da3_result.pano_keep_counts.get(1, (0, 1))
+            return (kept_a / total_a) >= keep_rate_threshold and (kept_b / total_b) >= keep_rate_threshold
+
+        try:
+            with tempfile.TemporaryDirectory() as views_base:
+                i = 0
+                while i < len(node_candidates) - 1:
+                    attempts = []
+                    if active_key is not None and active_key in node_dicts[i] and active_key in node_dicts[i + 1]:
+                        attempts.append(active_key)
+                    for key in try_order[i]:
+                        if len(attempts) >= max_attempts_per_position:
+                            break
+                        if key == active_key or key in attempts:
+                            continue
+                        if key not in node_dicts[i] or key not in node_dicts[i + 1]:
+                            continue
+                        attempts.append(key)
+
+                    committed_key = None
+                    for key in attempts:
+                        _, path_a, _, _ = node_dicts[i][key]
+                        _, path_b, _, _ = node_dicts[i + 1][key]
+                        window_dir = os.path.join(views_base, f"pos{i}_{key[0]}_{key[1]}".replace("/", "_"))
+                        os.makedirs(window_dir, exist_ok=True)
+                        filtered_views, da3_result, pts, cols, _, _ = _run_da3(
+                            path_a, [path_b], cfg, window_dir,
+                            da3=da3, dist_thresh=dist_thresh, angle_thresh=angle_thresh, step_degrees=step_degrees,
+                        )
+                        if healthy(da3_result):
+                            committed_key = key
+                            break
+
+                    if committed_key is None:
+                        if seg_pts is not None:
+                            segments.append((seg_pts, seg_cols, (seg_start, i), active_key))
+                        seg_pts = seg_cols = None
+                        active_key = None
+                        prev_pair_poses = None
+                        i += 1
+                        continue
+
+                    pano_poses = da3_result.pano_poses
+                    node_poses = [
+                        (pano_poses[0]["center"], pano_poses[0]["rotation"]),
+                        (pano_poses[1]["center"], pano_poses[1]["rotation"]),
+                    ]
+
+                    if committed_key == active_key and prev_pair_poses is not None:
+                        local_R, local_t = _rigid_align([node_poses[0]], [prev_pair_poses[1]])
+                        seg_R, seg_t = seg_R @ local_R, seg_R @ local_t + seg_t
+                        seg_pts = np.concatenate([seg_pts, pts @ seg_R.T + seg_t], axis=0)
+                        seg_cols = np.concatenate([seg_cols, cols], axis=0)
+                    else:
+                        if seg_pts is not None:
+                            segments.append((seg_pts, seg_cols, (seg_start, i), active_key))
+                        seg_pts, seg_cols = pts, cols
+                        seg_R, seg_t = np.eye(3), np.zeros(3)
+                        seg_start = i
+
+                    active_key = committed_key
+                    prev_pair_poses = node_poses
+                    i += 1
+
+                if seg_pts is not None:
+                    segments.append((seg_pts, seg_cols, (seg_start, len(node_candidates) - 1), active_key))
+        finally:
+            del da3
+            torch.cuda.empty_cache()
+
+        return segments
+
     def run_windowed_reconstruction_full_pool(
         self,
         windows: list[list[tuple[str, str, float, float]]],
