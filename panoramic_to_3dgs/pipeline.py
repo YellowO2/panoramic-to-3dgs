@@ -651,12 +651,13 @@ class Pipeline:
         active_key = None
         prev_pair_poses = None  # [(center, rotation) for node i, node i+1] of the last committed window
 
-        def healthy(da3_result):
-            kept_a, total_a = da3_result.pano_keep_counts.get(0, (0, 1))
-            kept_b, total_b = da3_result.pano_keep_counts.get(1, (0, 1))
-            result = (kept_a / total_a) >= keep_rate_threshold and (kept_b / total_b) >= keep_rate_threshold
-            print(f"    health check: a={kept_a}/{total_a} b={kept_b}/{total_b} threshold={keep_rate_threshold} -> {result} (raw pano_keep_counts={da3_result.pano_keep_counts})")
-            return result
+        def healthy(da3_result, id_a, id_b):
+            # DA3Model's pano_id (both DA3Result.pano_keep_counts and
+            # .pano_poses) is os.path.basename(path), not a positional
+            # index -- see _run_da3's extract_views_for_da3 calls.
+            kept_a, total_a = da3_result.pano_keep_counts.get(id_a, (0, 1))
+            kept_b, total_b = da3_result.pano_keep_counts.get(id_b, (0, 1))
+            return (kept_a / total_a) >= keep_rate_threshold and (kept_b / total_b) >= keep_rate_threshold
 
         try:
             with tempfile.TemporaryDirectory() as views_base:
@@ -674,22 +675,23 @@ class Pipeline:
                             continue
                         attempts.append(key)
 
-                    print(f"  position {i}: active_key={active_key} attempts={attempts}")
                     committed_key = None
+                    committed_id_a = committed_id_b = None
                     for key in attempts:
                         _, path_a, _, _ = node_dicts[i][key]
                         _, path_b, _, _ = node_dicts[i + 1][key]
+                        id_a, id_b = os.path.basename(path_a), os.path.basename(path_b)
                         window_dir = os.path.join(views_base, f"pos{i}_{key[0]}_{key[1]}".replace("/", "_"))
                         os.makedirs(window_dir, exist_ok=True)
                         filtered_views, da3_result, pts, cols, _, _ = _run_da3(
                             path_a, [path_b], cfg, window_dir,
                             da3=da3, dist_thresh=dist_thresh, angle_thresh=angle_thresh, step_degrees=step_degrees,
                         )
-                        if healthy(da3_result):
+                        if healthy(da3_result, id_a, id_b):
                             committed_key = key
+                            committed_id_a, committed_id_b = id_a, id_b
                             break
 
-                    print(f"  position {i}: committed_key={committed_key}")
                     if committed_key is None:
                         if seg_pts is not None:
                             segments.append((seg_pts, seg_cols, (seg_start, i), active_key))
@@ -701,8 +703,8 @@ class Pipeline:
 
                     pano_poses = da3_result.pano_poses
                     node_poses = [
-                        (pano_poses[0]["center"], pano_poses[0]["rotation"]),
-                        (pano_poses[1]["center"], pano_poses[1]["rotation"]),
+                        (pano_poses[committed_id_a]["center"], pano_poses[committed_id_a]["rotation"]),
+                        (pano_poses[committed_id_b]["center"], pano_poses[committed_id_b]["rotation"]),
                     ]
 
                     if committed_key == active_key and prev_pair_poses is not None:
