@@ -742,6 +742,7 @@ class Pipeline:
         end_lon: float,
         target_hop_m: float = 10.0,
         hop_weight: float = 1.0,
+        start_zone_m: float = 5.0,
         goal_tolerance_m: float = 15.0,
         max_tests: int = 40,
         keep_rate_threshold: float = 0.5,
@@ -762,7 +763,9 @@ class Pipeline:
           dist(child, end) + hop_weight * |hop - target_hop_m| (lower first)
           -- pulls toward the goal, prefers ~target_hop_m hops over the
           biggest/smallest jump.
-        - Seed: nearest node to start per date (so all dates compete).
+        - Seed: every node within start_zone_m of start, per date (not just
+          the single nearest -- a few candidates can cluster near start, any
+          of them is a reasonable entry point; all dates still compete).
         - Commit to a date on the first passing edge; then only extend that
           date's tree (a single reconstruction must be one date -- no shared
           image to align across dates). On a failed edge, the frontier just
@@ -793,19 +796,20 @@ class Pipeline:
         def score(child_key, hop):
             return gdist(child_key) + hop_weight * abs(hop - target_hop_m)
 
-        # Seed: nearest node to start, per date.
-        best_root = {}
+        # Seed: every node within start_zone_m of start, per date.
+        roots_by_date = {}
         for key, (_, lat, lon, date) in node_by_key.items():
-            d = _haversine_m(lat, lon, start_lat, start_lon)
-            if date not in best_root or d < best_root[date][1]:
-                best_root[date] = (key, d)
+            if _haversine_m(lat, lon, start_lat, start_lon) <= start_zone_m:
+                roots_by_date.setdefault(date, []).append(key)
 
         frontier = []  # (score, seq, from_key, to_key, hop)
         seq = 0
-        for date, (root_key, _) in best_root.items():
-            for other_key, hop in edges.get(root_key, []):
-                heapq.heappush(frontier, (score(other_key, hop), seq, root_key, other_key, hop))
-                seq += 1
+        for date, root_keys in roots_by_date.items():
+            for root_key in root_keys:
+                for other_key, hop in edges.get(root_key, []):
+                    heapq.heappush(frontier, (score(other_key, hop), seq, root_key, other_key, hop))
+                    seq += 1
+        print(f"pathfind: seeded {sum(len(v) for v in roots_by_date.values())} roots across {len(roots_by_date)} dates, frontier size {len(frontier)}")
 
         def healthy(res, id_a, id_b):
             ka, ta = res.pano_keep_counts.get(id_a, (0, 1))
