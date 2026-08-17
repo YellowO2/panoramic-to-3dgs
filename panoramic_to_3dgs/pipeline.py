@@ -845,7 +845,7 @@ class Pipeline:
                         da3=da3, dist_thresh=dist_thresh, angle_thresh=angle_thresh, step_degrees=step_degrees,
                     )
                     tests += 1
-                    print(f"test {tests}: {from_key} -> {to_key} (hop {hop:.1f}m) -> {'OK' if healthy(res, id_a, id_b) else 'fail'}")
+                    print(f"test {tests}: {from_key} -> {to_key} (hop {hop:.1f}m, {gdist(to_key):.1f}m to goal) -> {'OK' if healthy(res, id_a, id_b) else 'fail'}")
                     if not healthy(res, id_a, id_b):
                         continue
 
@@ -855,6 +855,7 @@ class Pipeline:
                     if committed_date is None:
                         # First success: commit date, this edge's frame is the global base.
                         committed_date = node_by_key[to_key][3]
+                        print(f"  committed to date {committed_date}")
                         confirmed[from_key] = {"seg_R": np.eye(3), "seg_t": np.zeros(3), "pose": pose_a}
                         confirmed[to_key] = {"seg_R": np.eye(3), "seg_t": np.zeros(3), "pose": pose_b}
                         global_pts, global_cols = pts, cols
@@ -881,6 +882,9 @@ class Pipeline:
             del da3
             torch.cuda.empty_cache()
 
+        if not reached:
+            stop_reason = "frontier exhausted (nothing left to try)" if not frontier else "test budget hit"
+            print(f"  stopped: {stop_reason}")
         print(f"pathfind: {tests} tests, {len(path_edges)} hops, date={committed_date}, reached={reached}")
         if global_pts is None:
             return []
