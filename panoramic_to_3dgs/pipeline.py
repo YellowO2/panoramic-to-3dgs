@@ -731,3 +731,153 @@ class Pipeline:
             torch.cuda.empty_cache()
 
         return segments
+
+    def run_pathfind_reconstruction(
+        self,
+        nodes: list[tuple[str, str, float, float, str]],
+        edges: dict,
+        start_lat: float,
+        start_lon: float,
+        end_lat: float,
+        end_lon: float,
+        target_hop_m: float = 10.0,
+        hop_weight: float = 1.0,
+        goal_tolerance_m: float = 15.0,
+        max_tests: int = 40,
+        keep_rate_threshold: float = 0.5,
+        dist_thresh: float = 0.2,
+        angle_thresh: float = 1,
+        step_degrees: int = 20,
+    ) -> list[tuple[np.ndarray, np.ndarray, list, str, bool]]:
+        """Best-first search over a candidate graph, start -> end, entirely
+        within ONE DA3Model load (same ZeroGPU reason as the methods above).
+
+        Inputs (all pre-downloaded by the caller -- no network here):
+        - nodes: (key, path, lat, lon, date) per candidate pano.
+        - edges: {key: [(other_key, dist_m), ...]} -- untested same-date hops
+          from build_graph; this method runs the real DA3 test on each.
+
+        Search:
+        - Frontier of candidate edges, scored by
+          dist(child, end) + hop_weight * |hop - target_hop_m| (lower first)
+          -- pulls toward the goal, prefers ~target_hop_m hops over the
+          biggest/smallest jump.
+        - Seed: nearest node to start per date (so all dates compete).
+        - Commit to a date on the first passing edge; then only extend that
+          date's tree (a single reconstruction must be one date -- no shared
+          image to align across dates). On a failed edge, the frontier just
+          offers the next candidate -- reroute is automatic.
+        - Stitch each passing edge onto the tree via _rigid_align on the
+          shared (already-confirmed) parent pano, same math as greedy's walk.
+        - Stop: a confirmed node within goal_tolerance_m of end (reached),
+          frontier empty, or max_tests budget hit.
+
+        v1 limits (deferred): single date, single segment. A street no one
+        date spans returns a partial path (reached=False), not multi-date
+        segments.
+
+        Returns [] or a 1-element list [(pts, cols, path_edges, date,
+        reached)].
+        """
+        import heapq
+
+        cfg = self.config
+        node_by_key = {key: (path, lat, lon, date) for key, path, lat, lon, date in nodes}
+        if not node_by_key:
+            return []
+
+        def gdist(key):
+            _, lat, lon, _ = node_by_key[key]
+            return _haversine_m(lat, lon, end_lat, end_lon)
+
+        def score(child_key, hop):
+            return gdist(child_key) + hop_weight * abs(hop - target_hop_m)
+
+        # Seed: nearest node to start, per date.
+        best_root = {}
+        for key, (_, lat, lon, date) in node_by_key.items():
+            d = _haversine_m(lat, lon, start_lat, start_lon)
+            if date not in best_root or d < best_root[date][1]:
+                best_root[date] = (key, d)
+
+        frontier = []  # (score, seq, from_key, to_key, hop)
+        seq = 0
+        for date, (root_key, _) in best_root.items():
+            for other_key, hop in edges.get(root_key, []):
+                heapq.heappush(frontier, (score(other_key, hop), seq, root_key, other_key, hop))
+                seq += 1
+
+        def healthy(res, id_a, id_b):
+            ka, ta = res.pano_keep_counts.get(id_a, (0, 1))
+            kb, tb = res.pano_keep_counts.get(id_b, (0, 1))
+            return (ka / ta) >= keep_rate_threshold and (kb / tb) >= keep_rate_threshold
+
+        da3 = DA3Model(cfg.da3_model)
+        committed_date = None
+        confirmed = {}  # key -> {"seg_R", "seg_t", "pose"} (pose in its confirming-edge frame)
+        global_pts = global_cols = None
+        path_edges = []
+        tests = 0
+        reached = False
+
+        try:
+            with tempfile.TemporaryDirectory() as views_base:
+                while frontier and tests < max_tests and not reached:
+                    _, _, from_key, to_key, hop = heapq.heappop(frontier)
+                    if to_key in confirmed:
+                        continue
+                    if committed_date is not None:
+                        if node_by_key[to_key][3] != committed_date:
+                            continue
+                        if from_key not in confirmed:
+                            continue
+
+                    path_a, path_b = node_by_key[from_key][0], node_by_key[to_key][0]
+                    id_a, id_b = os.path.basename(path_a), os.path.basename(path_b)
+                    test_dir = os.path.join(views_base, f"t{tests}")
+                    os.makedirs(test_dir, exist_ok=True)
+                    _, res, pts, cols, _, _ = _run_da3(
+                        path_a, [path_b], cfg, test_dir,
+                        da3=da3, dist_thresh=dist_thresh, angle_thresh=angle_thresh, step_degrees=step_degrees,
+                    )
+                    tests += 1
+                    print(f"test {tests}: {from_key} -> {to_key} (hop {hop:.1f}m) -> {'OK' if healthy(res, id_a, id_b) else 'fail'}")
+                    if not healthy(res, id_a, id_b):
+                        continue
+
+                    pose_a = (res.pano_poses[id_a]["center"], res.pano_poses[id_a]["rotation"])
+                    pose_b = (res.pano_poses[id_b]["center"], res.pano_poses[id_b]["rotation"])
+
+                    if committed_date is None:
+                        # First success: commit date, this edge's frame is the global base.
+                        committed_date = node_by_key[to_key][3]
+                        confirmed[from_key] = {"seg_R": np.eye(3), "seg_t": np.zeros(3), "pose": pose_a}
+                        confirmed[to_key] = {"seg_R": np.eye(3), "seg_t": np.zeros(3), "pose": pose_b}
+                        global_pts, global_cols = pts, cols
+                    else:
+                        # Align this edge's frame onto the confirmed parent, then to global.
+                        pf = confirmed[from_key]
+                        local_R, local_t = _rigid_align([pose_a], [pf["pose"]])
+                        seg_R = pf["seg_R"] @ local_R
+                        seg_t = pf["seg_R"] @ local_t + pf["seg_t"]
+                        confirmed[to_key] = {"seg_R": seg_R, "seg_t": seg_t, "pose": pose_b}
+                        global_pts = np.concatenate([global_pts, pts @ seg_R.T + seg_t], axis=0)
+                        global_cols = np.concatenate([global_cols, cols], axis=0)
+                    path_edges.append((from_key, to_key))
+
+                    if gdist(to_key) <= goal_tolerance_m:
+                        reached = True
+                        break
+                    for other_key, next_hop in edges.get(to_key, []):
+                        if other_key in confirmed or node_by_key[other_key][3] != committed_date:
+                            continue
+                        heapq.heappush(frontier, (score(other_key, next_hop), seq, to_key, other_key, next_hop))
+                        seq += 1
+        finally:
+            del da3
+            torch.cuda.empty_cache()
+
+        print(f"pathfind: {tests} tests, {len(path_edges)} hops, date={committed_date}, reached={reached}")
+        if global_pts is None:
+            return []
+        return [(global_pts, global_cols, path_edges, committed_date, reached)]
