@@ -576,16 +576,16 @@ class Pipeline:
 
     def run_greedy_pass_reconstruction(
         self,
-        node_candidates: list[list[tuple[str, str, str, str, float, float]]],
-        try_order: list[list[tuple[str, str]]],
+        node_candidates: list[list[tuple[str, str, str, float, float]]],
+        try_order: list[list[str]],
         keep_rate_threshold: float = 0.5,
         max_attempts_per_position: int = 3,
         dist_thresh: float = 0.2,
         angle_thresh: float = 1,
         step_degrees: int = 20,
-    ) -> list[tuple[np.ndarray, np.ndarray, tuple[int, int], tuple[str, str]]]:
-        """Greedy same-capture-pass sliding-window reconstruction, entirely
-        within ONE DA3Model load (same ZeroGPU-consolidation reason as
+    ) -> list[tuple[np.ndarray, np.ndarray, tuple[int, int], str]]:
+        """Greedy same-date sliding-window reconstruction, entirely within
+        ONE DA3Model load (same ZeroGPU-consolidation reason as
         run_windowed_reconstruction).
 
         Unlike run_windowed_reconstruction (which always uses a solo
@@ -598,47 +598,50 @@ class Pipeline:
         call IS the grading.
 
         node_candidates: one list per street node (in order), each entry
-        (source, pass_key, label, path, lat, lon) -- e.g. ("apple",
-        <build_id>, "apple:123", "/path.jpg", 1.23, 103.4) or ("google",
-        "2024-07", "google:abc", "/path.jpg", 1.23, 103.4). (source,
-        pass_key) identifies which capture pass a candidate belongs to;
-        candidates from different nodes with the same (source, pass_key)
-        are treated as the same pass/visit.
+        (date, label, path, lat, lon) -- e.g. ("2024-07", "apple:123",
+        "/path.jpg", 1.23, 103.4). `date` identifies which capture pass a
+        candidate belongs to (Apple and Google both use the same date-string
+        format, see the caller); candidates from different nodes with the
+        same date are treated as the same pass/visit, regardless of source
+        -- an Apple candidate and a Google candidate can share a "pass" if
+        they land on the same date. That's untested as a general rule, which
+        is exactly why every window is still graded by a real pairwise DA3
+        call, never trusted from the date match alone.
 
-        try_order: one list per node, of (source, pass_key) pairs in the
-        order to attempt them when starting a *new* segment at that node --
-        precomputed by the caller from cheap metadata (coverage ranking),
-        not derived here. This method never re-ranks; it only walks forward
-        using whatever order it's given, capped at max_attempts_per_position
-        attempts per position.
+        try_order: one list per node, of dates in the order to attempt them
+        when starting a *new* segment at that node -- precomputed by the
+        caller from cheap metadata (coverage ranking), not derived here.
+        This method never re-ranks; it only walks forward using whatever
+        order it's given, capped at max_attempts_per_position attempts per
+        position.
 
         Walk: at each position i, build a 2-node window from node i and
-        node i+1 using the same (source, pass_key) on both sides. If a
-        segment is already in progress, its active pass is tried first
-        (continuity is preferred over switching to a "better" pass, since
-        switching can't be rigid-aligned -- there's no shared image between
-        two different passes). Otherwise (or if the active pass fails or
-        isn't available at this position), try try_order[i]'s passes in
-        order, skipping ones missing at either node, capped at
-        max_attempts_per_position. A window is "healthy" if both sides kept
-        at least keep_rate_threshold of their own view-slices
-        (DA3Result.pano_keep_counts). On success: advance, and if continuing
-        the active pass, rigid-align this window's node-i pose onto where
-        node i was placed in the previous window (the two windows share
-        that exact image). On failure at every attempted pass: close out
-        the current segment (if any) and start a fresh search at i+1.
+        node i+1 using the same date on both sides. If a segment is already
+        in progress, its active date is tried first (continuity is
+        preferred over switching to a "better" pass, since switching can't
+        be rigid-aligned -- there's no shared image between two different
+        passes). Otherwise (or if the active date fails or isn't available
+        at this position), try try_order[i]'s dates in order, skipping ones
+        missing at either node, capped at max_attempts_per_position. A
+        window is "healthy" if both sides kept at least keep_rate_threshold
+        of their own view-slices (DA3Result.pano_keep_counts). On success:
+        advance, and if continuing the active date, rigid-align this
+        window's node-i pose onto where node i was placed in the previous
+        window (the two windows share that exact image). On failure at
+        every attempted date: close out the current segment (if any) and
+        start a fresh search at i+1.
 
         Returns a list of segments, each (points, colors, (start_node_idx,
-        end_node_idx), (source, pass_key)) -- deliberately NOT one merged
-        cloud, since a street with no single pass covering it end-to-end is
-        expected to break into disconnected segments, not something to
-        force into one result.
+        end_node_idx), date) -- deliberately NOT one merged cloud, since a
+        street with no single pass covering it end-to-end is expected to
+        break into disconnected segments, not something to force into one
+        result.
         """
         cfg = self.config
         da3 = DA3Model(cfg.da3_model)
 
         node_dicts = [
-            {(source, pass_key): (label, path, lat, lon) for source, pass_key, label, path, lat, lon in candidates}
+            {date: (label, path, lat, lon) for date, label, path, lat, lon in candidates}
             for candidates in node_candidates
         ]
 
@@ -679,7 +682,7 @@ class Pipeline:
                         _, path_a, _, _ = node_dicts[i][key]
                         _, path_b, _, _ = node_dicts[i + 1][key]
                         id_a, id_b = os.path.basename(path_a), os.path.basename(path_b)
-                        window_dir = os.path.join(views_base, f"pos{i}_{key[0]}_{key[1]}".replace("/", "_"))
+                        window_dir = os.path.join(views_base, f"pos{i}_{key}".replace("/", "_"))
                         os.makedirs(window_dir, exist_ok=True)
                         filtered_views, da3_result, pts, cols, _, _ = _run_da3(
                             path_a, [path_b], cfg, window_dir,
