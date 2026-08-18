@@ -744,7 +744,7 @@ class Pipeline:
         hop_weight: float = 1.0,
         start_zone_m: float = 5.0,
         goal_tolerance_m: float = 15.0,
-        max_tests: int = 40,
+        max_tests_per_date: int = 50,
         keep_rate_threshold: float = 0.5,
         dist_thresh: float = 0.2,
         angle_thresh: float = 1,
@@ -758,26 +758,25 @@ class Pipeline:
         - edges: {key: [(other_key, dist_m), ...]} -- untested same-date hops
           from build_graph; this method runs the real DA3 test on each.
 
-        Search:
-        - Frontier of candidate edges, scored by
-          dist(child, end) + hop_weight * |hop - target_hop_m| (lower first)
-          -- pulls toward the goal, prefers ~target_hop_m hops over the
-          biggest/smallest jump.
-        - Seed: every node within start_zone_m of start, per date (not just
-          the single nearest -- a few candidates can cluster near start, any
-          of them is a reasonable entry point; all dates still compete).
-        - Commit to a date on the first passing edge; then only extend that
-          date's tree (a single reconstruction must be one date -- no shared
-          image to align across dates). On a failed edge, the frontier just
-          offers the next candidate -- reroute is automatic.
-        - Stitch each passing edge onto the tree via _rigid_align on the
-          shared (already-confirmed) parent pano, same math as greedy's walk.
-        - Stop: a confirmed node within goal_tolerance_m of end (reached),
-          frontier empty, or max_tests budget hit.
+        Search: one date at a time, each its own independent best-first
+        search (own frontier, own confirmed tree -- a single reconstruction
+        must be one date, no shared image to align across dates). Frontier
+        edges scored by dist(child, end) + hop_weight * |hop - target_hop_m|
+        (lower first) -- pulls toward the goal, prefers ~target_hop_m hops
+        over the biggest/smallest jump. Seed: every node within
+        start_zone_m of start for that date. Stitch each passing edge onto
+        the tree via _rigid_align on the shared (already-confirmed) parent
+        pano, same math as greedy's walk.
 
-        v1 limits (deferred): single date, single segment. A street no one
-        date spans returns a partial path (reached=False), not multi-date
-        segments.
+        If a date reaches the goal (a confirmed node within goal_tolerance_m
+        of end), that's the result -- stop trying further dates. If a date's
+        frontier runs dry or hits max_tests_per_date without reaching, it's
+        kept as a candidate partial result and the next date is tried; the
+        date whose confirmed path got closest to the goal wins if no date
+        ever reaches it.
+
+        v1 limit (deferred): single segment. Doesn't stitch two different
+        dates' partial coverage together even if that would reach further.
 
         Returns [] or a 1-element list [(pts, cols, path_edges, date,
         reached)].
@@ -796,105 +795,124 @@ class Pipeline:
         def score(child_key, hop):
             return gdist(child_key) + hop_weight * abs(hop - target_hop_m)
 
-        # Seed: every node within start_zone_m of start, per date.
-        roots_by_date = {}
-        for key, (_, lat, lon, date) in node_by_key.items():
-            if _haversine_m(lat, lon, start_lat, start_lon) <= start_zone_m:
-                roots_by_date.setdefault(date, []).append(key)
-
-        frontier = []  # (score, seq, from_key, to_key, hop)
-        seq = 0
-        for date, root_keys in roots_by_date.items():
-            for root_key in root_keys:
-                for other_key, hop in edges.get(root_key, []):
-                    heapq.heappush(frontier, (score(other_key, hop), seq, root_key, other_key, hop))
-                    seq += 1
-        print(f"pathfind: seeded {sum(len(v) for v in roots_by_date.values())} roots across {len(roots_by_date)} dates, frontier size {len(frontier)}")
-
         def healthy(res, id_a, id_b):
             ka, ta = res.pano_keep_counts.get(id_a, (0, 1))
             kb, tb = res.pano_keep_counts.get(id_b, (0, 1))
             return (ka / ta) >= keep_rate_threshold and (kb / tb) >= keep_rate_threshold
 
+        # Seed roots per date: every node within start_zone_m of start.
+        roots_by_date = {}
+        for key, (_, lat, lon, date) in node_by_key.items():
+            if _haversine_m(lat, lon, start_lat, start_lon) <= start_zone_m:
+                roots_by_date.setdefault(date, []).append(key)
+        print(f"pathfind: {sum(len(v) for v in roots_by_date.values())} roots across {len(roots_by_date)} dates")
+
+        def search_date(date, root_keys, da3, views_base, test_offset):
+            """Best-first search restricted to one date. Returns
+            (pts, cols, path_edges, reached, tests_done)."""
+            frontier = []  # (score, seq, from_key, to_key, hop)
+            seq = 0
+            for root_key in root_keys:
+                for other_key, hop in edges.get(root_key, []):
+                    if node_by_key[other_key][3] != date:
+                        continue
+                    heapq.heappush(frontier, (score(other_key, hop), seq, root_key, other_key, hop))
+                    seq += 1
+
+            confirmed = {}
+            global_pts = global_cols = None
+            path_edges = []
+            tests = 0
+            reached = False
+
+            while frontier and tests < max_tests_per_date and not reached:
+                _, _, from_key, to_key, hop = heapq.heappop(frontier)
+                if to_key in confirmed:
+                    continue
+                if path_edges and from_key not in confirmed:
+                    continue
+
+                path_a, path_b = node_by_key[from_key][0], node_by_key[to_key][0]
+                id_a, id_b = os.path.basename(path_a), os.path.basename(path_b)
+                test_dir = os.path.join(views_base, f"t{test_offset + tests}")
+                os.makedirs(test_dir, exist_ok=True)
+                _, res, pts, cols, _, _ = _run_da3(
+                    path_a, [path_b], cfg, test_dir,
+                    da3=da3, dist_thresh=dist_thresh, angle_thresh=angle_thresh, step_degrees=step_degrees,
+                )
+                tests += 1
+                ok = healthy(res, id_a, id_b)
+                hop_num = len(path_edges) + 1
+                status = "OK" if ok else "FAIL, trying next candidate"
+                print(f"[{date} hop {hop_num}] {from_key} -> {to_key} (hop {hop:.1f}m, {gdist(to_key):.1f}m to goal): {status}")
+                if not ok:
+                    continue
+
+                pose_a = (res.pano_poses[id_a]["center"], res.pano_poses[id_a]["rotation"])
+                pose_b = (res.pano_poses[id_b]["center"], res.pano_poses[id_b]["rotation"])
+
+                if not path_edges:
+                    # First success for this date: this edge's frame is the tree's base.
+                    confirmed[from_key] = {"seg_R": np.eye(3), "seg_t": np.zeros(3), "pose": pose_a}
+                    confirmed[to_key] = {"seg_R": np.eye(3), "seg_t": np.zeros(3), "pose": pose_b}
+                    global_pts, global_cols = pts, cols
+                else:
+                    # Align this edge's frame onto the confirmed parent, then to the tree base.
+                    pf = confirmed[from_key]
+                    local_R, local_t = _rigid_align([pose_a], [pf["pose"]])
+                    seg_R = pf["seg_R"] @ local_R
+                    seg_t = pf["seg_R"] @ local_t + pf["seg_t"]
+                    confirmed[to_key] = {"seg_R": seg_R, "seg_t": seg_t, "pose": pose_b}
+                    global_pts = np.concatenate([global_pts, pts @ seg_R.T + seg_t], axis=0)
+                    global_cols = np.concatenate([global_cols, cols], axis=0)
+                path_edges.append((from_key, to_key))
+
+                reached_now = gdist(to_key) <= goal_tolerance_m
+                if reached_now:
+                    print(f"  [{date}] reached goal ({gdist(to_key):.1f}m <= {goal_tolerance_m}m tolerance)")
+                trail = " -> ".join([path_edges[0][0]] + [e[1] for e in path_edges])
+                print(f"  [{date}] path so far: {trail}")
+
+                if reached_now:
+                    reached = True
+                    break
+                for other_key, next_hop in edges.get(to_key, []):
+                    if other_key in confirmed or node_by_key[other_key][3] != date:
+                        continue
+                    heapq.heappush(frontier, (score(other_key, next_hop), seq, to_key, other_key, next_hop))
+                    seq += 1
+
+            return global_pts, global_cols, path_edges, reached, tests
+
+        def final_gdist(path_edges):
+            return gdist(path_edges[-1][1]) if path_edges else float("inf")
+
         da3 = DA3Model(cfg.da3_model)
-        committed_date = None
-        confirmed = {}  # key -> {"seg_R", "seg_t", "pose"} (pose in its confirming-edge frame)
-        global_pts = global_cols = None
-        path_edges = []
-        tests = 0
-        reached = False
+        best = None  # (pts, cols, path_edges, date, reached)
+        total_tests = 0
 
         try:
             with tempfile.TemporaryDirectory() as views_base:
-                while frontier and tests < max_tests and not reached:
-                    _, _, from_key, to_key, hop = heapq.heappop(frontier)
-                    if to_key in confirmed:
+                for date, root_keys in roots_by_date.items():
+                    print(f"pathfind: trying date {date} ({len(root_keys)} roots)")
+                    pts, cols, path_edges, reached, tests = search_date(date, root_keys, da3, views_base, total_tests)
+                    total_tests += tests
+                    if pts is None:
+                        print(f"  [{date}] no hop succeeded")
                         continue
-                    if committed_date is not None:
-                        if node_by_key[to_key][3] != committed_date:
-                            continue
-                        if from_key not in confirmed:
-                            continue
-
-                    path_a, path_b = node_by_key[from_key][0], node_by_key[to_key][0]
-                    id_a, id_b = os.path.basename(path_a), os.path.basename(path_b)
-                    test_dir = os.path.join(views_base, f"t{tests}")
-                    os.makedirs(test_dir, exist_ok=True)
-                    _, res, pts, cols, _, _ = _run_da3(
-                        path_a, [path_b], cfg, test_dir,
-                        da3=da3, dist_thresh=dist_thresh, angle_thresh=angle_thresh, step_degrees=step_degrees,
-                    )
-                    tests += 1
-                    ok = healthy(res, id_a, id_b)
-                    hop_num = len(path_edges) + 1
-                    status = "OK" if ok else "FAIL, trying next candidate"
-                    print(f"[hop {hop_num}] {from_key} -> {to_key} (hop {hop:.1f}m, {gdist(to_key):.1f}m to goal): {status}")
-                    if not ok:
-                        continue
-
-                    pose_a = (res.pano_poses[id_a]["center"], res.pano_poses[id_a]["rotation"])
-                    pose_b = (res.pano_poses[id_b]["center"], res.pano_poses[id_b]["rotation"])
-
-                    if committed_date is None:
-                        # First success: commit date, this edge's frame is the global base.
-                        committed_date = node_by_key[to_key][3]
-                        print(f"  committed to date {committed_date}")
-                        confirmed[from_key] = {"seg_R": np.eye(3), "seg_t": np.zeros(3), "pose": pose_a}
-                        confirmed[to_key] = {"seg_R": np.eye(3), "seg_t": np.zeros(3), "pose": pose_b}
-                        global_pts, global_cols = pts, cols
-                    else:
-                        # Align this edge's frame onto the confirmed parent, then to global.
-                        pf = confirmed[from_key]
-                        local_R, local_t = _rigid_align([pose_a], [pf["pose"]])
-                        seg_R = pf["seg_R"] @ local_R
-                        seg_t = pf["seg_R"] @ local_t + pf["seg_t"]
-                        confirmed[to_key] = {"seg_R": seg_R, "seg_t": seg_t, "pose": pose_b}
-                        global_pts = np.concatenate([global_pts, pts @ seg_R.T + seg_t], axis=0)
-                        global_cols = np.concatenate([global_cols, cols], axis=0)
-                    path_edges.append((from_key, to_key))
-
-                    reached_now = gdist(to_key) <= goal_tolerance_m
-                    if reached_now:
-                        print(f"  reached goal ({gdist(to_key):.1f}m <= {goal_tolerance_m}m tolerance)")
-                    trail = " -> ".join([path_edges[0][0]] + [e[1] for e in path_edges])
-                    print(f"  path so far: {trail}")
-
-                    if reached_now:
-                        reached = True
+                    if reached:
+                        best = (pts, cols, path_edges, date, reached)
                         break
-                    for other_key, next_hop in edges.get(to_key, []):
-                        if other_key in confirmed or node_by_key[other_key][3] != committed_date:
-                            continue
-                        heapq.heappush(frontier, (score(other_key, next_hop), seq, to_key, other_key, next_hop))
-                        seq += 1
+                    if best is None or final_gdist(path_edges) < final_gdist(best[2]):
+                        best = (pts, cols, path_edges, date, reached)
         finally:
             del da3
             torch.cuda.empty_cache()
 
-        if not reached:
-            stop_reason = "frontier exhausted (nothing left to try)" if not frontier else "test budget hit"
-            print(f"  stopped: {stop_reason}")
-        print(f"pathfind: {tests} attempts, {len(path_edges)} hops, date={committed_date}, reached={reached}")
-        if global_pts is None:
+        if best is None:
+            print(f"pathfind: {total_tests} attempts total, no date connected anything")
             return []
-        return [(global_pts, global_cols, path_edges, committed_date, reached)]
+
+        pts, cols, path_edges, date, reached = best
+        print(f"pathfind: {total_tests} attempts total, best date={date}, {len(path_edges)} hops, reached={reached}")
+        return [(pts, cols, path_edges, date, reached)]
