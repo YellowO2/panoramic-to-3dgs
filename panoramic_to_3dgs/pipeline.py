@@ -755,7 +755,7 @@ class Pipeline:
         start_zone_m: float = 5.0,
         goal_tolerance_m: float = 15.0,
         max_tests_per_date: int = 50,
-        keep_rate_threshold: float = 0.5,
+        keep_rate_threshold: float = 0.25,
         dist_thresh: float = 0.2,
         angle_thresh: float = 1,
         step_degrees: int = 20,
