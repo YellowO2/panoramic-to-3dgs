@@ -879,6 +879,19 @@ class Pipeline:
                     _, real_lat, real_lon, _ = node_by_key[key]
                     print(f"  [{date}] pose {label} {key}: real_latlon=({real_lat:.7f}, {real_lon:.7f}), local_center={lc}, global_center={gc}, global_yaw={yaw:.1f}deg")
 
+                def _log_raw_rotation(label, key, cam_center, cam_rot):
+                    """The pano's consensus (center, rotation) exactly as DA3
+                    reported it in THIS call's own local frame -- no seg_R/seg_t
+                    applied, no accumulation. Full 3x3 rotation matrix, not just
+                    a derived yaw, so it can be used directly (e.g. to render
+                    which raw-panorama crop it implies) outside this run."""
+                    lc = np.array2string(cam_center, precision=4, suppress_small=True)
+                    rot = np.array2string(cam_rot, precision=4, suppress_small=True)
+                    print(f"  [{date}] RAW pose {label} {key} (this call's own frame): center={lc}, rotation=\n{rot}")
+
+                _log_raw_rotation("A", from_key, pose_a[0], pose_a[1])
+                _log_raw_rotation("B", to_key, pose_b[0], pose_b[1])
+
                 if not path_edges:
                     # First success for this date: this edge's frame is the tree's base.
                     confirmed[from_key] = {"seg_R": np.eye(3), "seg_t": np.zeros(3), "pose": pose_a}
