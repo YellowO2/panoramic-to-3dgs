@@ -27,17 +27,30 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * earth_radius_m * atan2(sqrt(a), sqrt(1 - a))
 
 
-def _rigid_align(shared_from: list[tuple[np.ndarray, np.ndarray]], shared_to: list[tuple[np.ndarray, np.ndarray]]) -> tuple[np.ndarray, np.ndarray]:
+def _rigid_align(shared_from: list[tuple[np.ndarray, np.ndarray]], shared_to: list[tuple[np.ndarray, np.ndarray]], label: str = None) -> tuple[np.ndarray, np.ndarray]:
     """Average rigid transform (R, t) mapping the 'from' frame onto the 'to'
     frame, given 1+ shared anchor poses (center, rotation) expressed in both.
     Rotation averaged via quaternion mean, translation directly -- used by
     run_windowed_reconstruction and run_greedy_pass_reconstruction to align
-    one window's DA3 output onto the previous window's frame."""
+    one window's DA3 output onto the previous window's frame.
+
+    r_from/r_to are world-to-pano rotations for the SAME physical anchor,
+    expressed in each call's own arbitrary world frame (v_pano = r @ v_world).
+    For a direction to agree either way it's expressed: r_from @ v_from ==
+    r_to @ v_to, and v_to = R @ v_from, so r_from = r_to @ R, i.e.
+    R = r_to^-1 @ r_from = r_to.T @ r_from (rotations are orthogonal).
+    Verified against synthetic ground truth (random Q, reconstructed to
+    <0.001 deg) -- the previous r_to @ r_from.T was off by ~90 deg on real
+    data, which is what caused pathfind reconstructions to visibly fold
+    into a '*' shape instead of following the real street."""
     from scipy.spatial.transform import Rotation
 
     Rs, ts = [], []
-    for (c_from, r_from), (c_to, r_to) in zip(shared_from, shared_to):
-        R = r_to @ r_from.T
+    for i, ((c_from, r_from), (c_to, r_to)) in enumerate(zip(shared_from, shared_to)):
+        R = r_to.T @ r_from
+        if label:
+            yaw = Rotation.from_matrix(R).as_euler('yxz', degrees=True)[0]
+            print(f"    {label} pair {i}: implies yaw={yaw:.2f}deg")
         Rs.append(R)
         ts.append(c_to - R @ c_from)
     quats = np.array([Rotation.from_matrix(R).as_quat() for R in Rs])
@@ -926,7 +939,7 @@ class Pipeline:
                     else:
                         shared_from, shared_to = [pose_a], [pf["pose"]]
                         print(f"  [{date}] no shared slices for {from_key} between calls -- falling back to single collapsed pose")
-                    local_R, local_t = _rigid_align(shared_from, shared_to)
+                    local_R, local_t = _rigid_align(shared_from, shared_to, label=f"[{date}] align {from_key}")
                     seg_R = pf["seg_R"] @ local_R
                     seg_t = pf["seg_R"] @ local_t + pf["seg_t"]
                     confirmed[to_key] = {"seg_R": seg_R, "seg_t": seg_t, "pose": pose_b, "per_view": _per_view(id_b)}
