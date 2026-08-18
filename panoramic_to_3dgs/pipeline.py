@@ -947,27 +947,3 @@ class Pipeline:
         pts, cols, path_edges, date, reached = best
         print(f"pathfind: {total_tests} attempts total, best date={date}, {len(path_edges)} hops, reached={reached}")
         return [(pts, cols, path_edges, date, reached)]
-
-    def get_pairwise_poses(
-        self,
-        target_path: str,
-        support_paths: list[str],
-        dist_thresh: float = 0.2,
-        angle_thresh: float = 1,
-        step_degrees: int = 20,
-    ) -> dict:
-        """One-off diagnostic: run a single DA3 call (target + support panos)
-        and return each pano's consensus (center, rotation), keyed by
-        os.path.basename(path). No stitching, no chaining -- just the raw
-        per-call pose estimate, for inspecting one pairwise call in
-        isolation."""
-        cfg = self.config
-        with tempfile.TemporaryDirectory() as views_base:
-            _, res, _, _, _, _ = _run_da3(
-                target_path, support_paths, cfg, views_base,
-                dist_thresh=dist_thresh, angle_thresh=angle_thresh, step_degrees=step_degrees,
-            )
-        return {
-            pano_id: {"center": pose["center"], "rotation": pose["rotation"]}
-            for pano_id, pose in res.pano_poses.items()
-        }
