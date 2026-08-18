@@ -748,8 +748,7 @@ class Pipeline:
         edges: dict,
         start_lat: float,
         start_lon: float,
-        end_lat: float,
-        end_lon: float,
+        goals: list[tuple[float, float]],
         target_hop_m: float = 10.0,
         hop_weight: float = 1.0,
         start_zone_m: float = 5.0,
@@ -762,62 +761,76 @@ class Pipeline:
         date_order: list[str] | None = None,
         max_segments: int = 5,
     ) -> list[tuple[np.ndarray, np.ndarray, list, str, bool]]:
-        """Best-first search over a candidate graph, start -> end, entirely
-        within ONE DA3Model load (same ZeroGPU reason as the methods above).
+        """Best-first search over a candidate graph, start -> every goal in
+        `goals`, entirely within ONE DA3Model load (same ZeroGPU reason as
+        the methods above).
 
         Inputs (all pre-downloaded by the caller -- no network here):
         - nodes: (key, path, lat, lon, date) per candidate pano.
         - edges: {key: [(other_key, dist_m), ...]} -- untested same-date hops
           from build_graph; this method runs the real DA3 test on each.
+        - goals: real (lat, lon) points to reach -- more than one supports a
+          branching selection (e.g. a junction with multiple arms): the
+          search doesn't stop at the first one reached, it keeps growing the
+          same frontier toward whatever's still outstanding, since a
+          confirmed junction node already pushes ALL of its same-date
+          neighbors onto the frontier -- covering every branch is what the
+          existing best-first mechanics already do, this just stops it from
+          quitting early.
 
         Search: one date at a time, in date_order if given (falls back to
         whatever order roots_by_date built in for any date not listed --
         not a stable order, see the code comment where it's used). Each
         date is its own independent best-first search (own frontier, own
         confirmed tree -- a single reconstruction must be one date, no
-        shared image to align across dates). Frontier
-        edges scored by dist(child, end) + hop_weight * |hop - target_hop_m|
-        (lower first) -- pulls toward the goal, prefers ~target_hop_m hops
-        over the biggest/smallest jump. Seed: every node within
-        start_zone_m of start for that date. Stitch each passing edge onto
-        the tree via _rigid_align on the shared (already-confirmed) parent
-        pano, same math as greedy's walk.
+        shared image to align across dates), each starting from the FULL
+        outstanding goal set for this segment -- one date reaching a goal
+        doesn't mean a different date's own (separate) reconstruction also
+        covers it. Frontier edges scored by
+        dist(child, nearest outstanding goal) + hop_weight * |hop -
+        target_hop_m| (lower first). Seed: every node within start_zone_m
+        of start for that date. Stitch each passing edge onto the tree via
+        _rigid_align on the shared (already-confirmed) parent pano, same
+        math as greedy's walk.
 
-        If a date reaches the goal (a confirmed node within goal_tolerance_m
-        of end), that's the result for this segment -- stop trying further
-        dates. If a date's frontier runs dry or hits max_tests_per_date
-        without reaching, it's kept as a candidate partial result and the
-        next date is tried; the date whose confirmed path got closest to
-        the goal wins if no date ever reaches it.
+        Per segment, the date that covers the most goals (ties broken by
+        closest remaining distance) wins; its actually-covered goals are
+        removed from the overall outstanding set.
 
-        Multi-segment: if a segment doesn't reach the goal, its dead-end
-        node's real lat/lon becomes the start point for a new segment (same
-        per-date search, any date -- no date is assumed to continue where
-        the last one left off, since that's exactly the case DA3 can't
-        bridge on its own). Repeats up to max_segments times, or until a
-        new segment makes no real progress toward the goal (a genuine dead
-        end, not just "this date ran out"). Segments are NOT stitched
-        together here -- each is independently placed by DA3 in its own
-        arbitrary frame; joining them (e.g. via real GPS + ICP) is a
-        separate step done by the caller.
+        Multi-segment: if goals remain outstanding after the best date's
+        search, the confirmed node (from that winning date) closest to the
+        nearest remaining goal becomes the start point for a new segment --
+        same per-date search, any date, no date assumed to continue where
+        the last one left off (that's exactly the case DA3 can't bridge on
+        its own). Repeats up to max_segments times, or stops early if a new
+        segment covers no further goals and makes no real progress toward
+        the nearest remaining one (a genuine dead end, not just "this date
+        ran out"). Segments are NOT stitched together here -- each is
+        independently placed by DA3 in its own arbitrary frame; joining
+        them (e.g. via real GPS + ICP) is a separate step done by the
+        caller.
 
-        Returns a list of (pts, cols, path_edges, date, reached) tuples, one
-        per segment, in order from start toward end. Empty if the very
-        first segment couldn't connect anything at all.
+        Returns a list of (pts, cols, path_edges, date, reached_all) tuples,
+        one per segment, in the order they were produced. reached_all is
+        True only for the segment (if any) after which every goal was
+        covered. Empty if the very first segment couldn't connect anything.
         """
         import heapq
 
         cfg = self.config
         node_by_key = {key: (path, lat, lon, date) for key, path, lat, lon, date in nodes}
-        if not node_by_key:
+        if not node_by_key or not goals:
             return []
 
-        def gdist(key):
-            _, lat, lon, _ = node_by_key[key]
-            return _haversine_m(lat, lon, end_lat, end_lon)
+        def gdist_point(lat, lon, goal):
+            return _haversine_m(lat, lon, goal[0], goal[1])
 
-        def score(child_key, hop):
-            return gdist(child_key) + hop_weight * abs(hop - target_hop_m)
+        def nearest_goal_dist(key, remaining_idx):
+            _, lat, lon, _ = node_by_key[key]
+            return min(gdist_point(lat, lon, goals[gi]) for gi in remaining_idx)
+
+        def score(child_key, hop, remaining_idx):
+            return nearest_goal_dist(child_key, remaining_idx) + hop_weight * abs(hop - target_hop_m)
 
         def healthy(res, id_a, id_b):
             ka, ta = res.pano_keep_counts.get(id_a, (0, 1))
@@ -841,25 +854,26 @@ class Pipeline:
                 roots_by_date = {d: roots_by_date[d] for d in ordered_dates}
             return roots_by_date
 
-        def search_date(date, root_keys, da3, views_base, test_offset):
-            """Best-first search restricted to one date. Returns
-            (pts, cols, path_edges, reached, tests_done)."""
+        def search_date(date, root_keys, da3, views_base, test_offset, remaining_idx):
+            """Best-first search restricted to one date, against its own
+            copy of remaining_idx (mutated in place -- caller reads it back
+            afterward to see which goals THIS date's search covered).
+            Returns (pts, cols, path_edges, confirmed, tests_done)."""
             frontier = []  # (score, seq, from_key, to_key, hop)
             seq = 0
             for root_key in root_keys:
                 for other_key, hop in edges.get(root_key, []):
                     if node_by_key[other_key][3] != date:
                         continue
-                    heapq.heappush(frontier, (score(other_key, hop), seq, root_key, other_key, hop))
+                    heapq.heappush(frontier, (score(other_key, hop, remaining_idx), seq, root_key, other_key, hop))
                     seq += 1
 
             confirmed = {}
             global_pts = global_cols = None
             path_edges = []
             tests = 0
-            reached = False
 
-            while frontier and tests < max_tests_per_date and not reached:
+            while frontier and tests < max_tests_per_date and remaining_idx:
                 _, _, from_key, to_key, hop = heapq.heappop(frontier)
                 if to_key in confirmed:
                     continue
@@ -878,7 +892,7 @@ class Pipeline:
                 ok = healthy(res, id_a, id_b)
                 hop_num = len(path_edges) + 1
                 status = "OK" if ok else "FAIL, trying next candidate"
-                print(f"[{date} hop {hop_num}] {from_key} -> {to_key} (hop {hop:.1f}m, {gdist(to_key):.1f}m to goal): {status}")
+                print(f"[{date} hop {hop_num}] {from_key} -> {to_key} (hop {hop:.1f}m, {nearest_goal_dist(to_key, remaining_idx):.1f}m to nearest goal): {status}")
                 if not ok:
                     continue
 
@@ -929,73 +943,95 @@ class Pipeline:
                     _log_pose("B", to_key, pose_b[0], pose_b[1], seg_R, seg_t)
                 path_edges.append((from_key, to_key))
 
-                reached_now = gdist(to_key) <= goal_tolerance_m
-                if reached_now:
-                    print(f"  [{date}] reached goal ({gdist(to_key):.1f}m <= {goal_tolerance_m}m tolerance)")
+                _, to_lat, to_lon, _ = node_by_key[to_key]
+                newly_reached = [gi for gi in remaining_idx if gdist_point(to_lat, to_lon, goals[gi]) <= goal_tolerance_m]
+                for gi in newly_reached:
+                    remaining_idx.discard(gi)
+                    print(f"  [{date}] reached goal {gi} {goals[gi]} ({len(remaining_idx)} still outstanding)")
                 trail = " -> ".join([path_edges[0][0]] + [e[1] for e in path_edges])
                 print(f"  [{date}] path so far: {trail}")
 
-                if reached_now:
-                    reached = True
+                if not remaining_idx:
                     break
+                # Score against the now-possibly-smaller remaining_idx -- entries
+                # already queued from before a goal was reached keep their older
+                # (slightly stale) score, which only affects exploration order,
+                # not correctness.
                 for other_key, next_hop in edges.get(to_key, []):
                     if other_key in confirmed or node_by_key[other_key][3] != date:
                         continue
-                    heapq.heappush(frontier, (score(other_key, next_hop), seq, to_key, other_key, next_hop))
+                    heapq.heappush(frontier, (score(other_key, next_hop, remaining_idx), seq, to_key, other_key, next_hop))
                     seq += 1
 
-            return global_pts, global_cols, path_edges, reached, tests
+            return global_pts, global_cols, path_edges, confirmed, tests
 
-        def final_gdist(path_edges):
-            return gdist(path_edges[-1][1]) if path_edges else float("inf")
+        def confirmed_nearest(confirmed, remaining_idx):
+            """(key, dist) of whichever confirmed node sits closest to any
+            outstanding goal -- used both to rank which date's partial
+            result is "best" and to pick the next segment's start point."""
+            best_key, best_dist = None, float("inf")
+            for key in confirmed:
+                d = nearest_goal_dist(key, remaining_idx)
+                if d < best_dist:
+                    best_key, best_dist = key, d
+            return best_key, best_dist
 
         da3 = DA3Model(cfg.da3_model)
         segments = []
         total_tests = 0
+        overall_remaining = set(range(len(goals)))
         cur_lat, cur_lon = start_lat, start_lon
-        best_progress = _haversine_m(cur_lat, cur_lon, end_lat, end_lon)
+        best_progress = min(gdist_point(cur_lat, cur_lon, g) for g in goals)
 
         try:
             with tempfile.TemporaryDirectory() as views_base:
                 for seg_i in range(max_segments):
                     roots_by_date = roots_for(cur_lat, cur_lon)
-                    print(f"pathfind segment {seg_i + 1}: {sum(len(v) for v in roots_by_date.values())} roots across {len(roots_by_date)} dates from ({cur_lat:.6f}, {cur_lon:.6f})")
+                    print(f"pathfind segment {seg_i + 1}: {sum(len(v) for v in roots_by_date.values())} roots across {len(roots_by_date)} dates from ({cur_lat:.6f}, {cur_lon:.6f}), {len(overall_remaining)} goal(s) outstanding")
 
-                    best = None  # (pts, cols, path_edges, date, reached)
+                    best = None  # (pts, cols, path_edges, date, confirmed, remaining_after)
                     for date, root_keys in roots_by_date.items():
                         print(f"pathfind: trying date {date} ({len(root_keys)} roots)")
-                        pts, cols, path_edges, reached, tests = search_date(date, root_keys, da3, views_base, total_tests)
+                        remaining_idx = set(overall_remaining)
+                        pts, cols, path_edges, confirmed, tests = search_date(date, root_keys, da3, views_base, total_tests, remaining_idx)
                         total_tests += tests
                         if pts is None:
                             print(f"  [{date}] no hop succeeded")
                             continue
-                        if reached:
-                            best = (pts, cols, path_edges, date, reached)
+                        if not remaining_idx:
+                            best = (pts, cols, path_edges, date, confirmed, remaining_idx)
                             break
-                        if best is None or final_gdist(path_edges) < final_gdist(best[2]):
-                            best = (pts, cols, path_edges, date, reached)
+                        _, best_dist_here = confirmed_nearest(confirmed, remaining_idx)
+                        if best is None:
+                            best = (pts, cols, path_edges, date, confirmed, remaining_idx)
+                        else:
+                            _, cur_best_dist = confirmed_nearest(best[4], best[5])
+                            covers_more = len(remaining_idx) < len(best[5])
+                            if covers_more or (len(remaining_idx) == len(best[5]) and best_dist_here < cur_best_dist):
+                                best = (pts, cols, path_edges, date, confirmed, remaining_idx)
 
                     if best is None:
                         print(f"pathfind segment {seg_i + 1}: no date connected anything from this start -- stopping")
                         break
 
-                    pts, cols, path_edges, date, reached = best
-                    segments.append((pts, cols, path_edges, date, reached))
-                    end_key = path_edges[-1][1]
-                    _, seg_end_lat, seg_end_lon, _ = node_by_key[end_key]
-                    new_progress = _haversine_m(seg_end_lat, seg_end_lon, end_lat, end_lon)
-                    print(f"pathfind segment {seg_i + 1}: {len(path_edges)} hops, date={date}, reached={reached}, {new_progress:.1f}m to goal")
+                    pts, cols, path_edges, date, confirmed, remaining_after = best
+                    reached_all = not remaining_after
+                    segments.append((pts, cols, path_edges, date, reached_all))
+                    covered = overall_remaining - remaining_after
+                    overall_remaining = remaining_after
+                    print(f"pathfind segment {seg_i + 1}: {len(path_edges)} hops, date={date}, covered {len(covered)} goal(s), {len(overall_remaining)} still outstanding")
 
-                    if reached:
+                    if not overall_remaining:
                         break
-                    if new_progress >= best_progress - 1.0:
-                        print(f"pathfind: segment {seg_i + 1} made no real progress toward goal -- stopping")
+                    next_key, next_dist = confirmed_nearest(confirmed, overall_remaining)
+                    if next_key is None or next_dist >= best_progress - 1.0:
+                        print(f"pathfind: segment {seg_i + 1} made no real progress toward remaining goals -- stopping")
                         break
-                    best_progress = new_progress
-                    cur_lat, cur_lon = seg_end_lat, seg_end_lon
+                    best_progress = next_dist
+                    _, cur_lat, cur_lon, _ = node_by_key[next_key]
         finally:
             del da3
             torch.cuda.empty_cache()
 
-        print(f"pathfind: {total_tests} attempts total, {len(segments)} segment(s)")
+        print(f"pathfind: {total_tests} attempts total, {len(segments)} segment(s), {len(overall_remaining)} goal(s) never reached")
         return segments
