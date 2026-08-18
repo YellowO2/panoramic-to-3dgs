@@ -845,8 +845,11 @@ class Pipeline:
                         da3=da3, dist_thresh=dist_thresh, angle_thresh=angle_thresh, step_degrees=step_degrees,
                     )
                     tests += 1
-                    print(f"test {tests}: {from_key} -> {to_key} (hop {hop:.1f}m, {gdist(to_key):.1f}m to goal) -> {'OK' if healthy(res, id_a, id_b) else 'fail'}")
-                    if not healthy(res, id_a, id_b):
+                    ok = healthy(res, id_a, id_b)
+                    hop_num = len(path_edges) + 1
+                    status = "OK" if ok else "FAIL, trying next candidate"
+                    print(f"[hop {hop_num}] {from_key} -> {to_key} (hop {hop:.1f}m, {gdist(to_key):.1f}m to goal): {status}")
+                    if not ok:
                         continue
 
                     pose_a = (res.pano_poses[id_a]["center"], res.pano_poses[id_a]["rotation"])
@@ -870,7 +873,13 @@ class Pipeline:
                         global_cols = np.concatenate([global_cols, cols], axis=0)
                     path_edges.append((from_key, to_key))
 
-                    if gdist(to_key) <= goal_tolerance_m:
+                    reached_now = gdist(to_key) <= goal_tolerance_m
+                    if reached_now:
+                        print(f"  reached goal ({gdist(to_key):.1f}m <= {goal_tolerance_m}m tolerance)")
+                    trail = " -> ".join([path_edges[0][0]] + [e[1] for e in path_edges])
+                    print(f"  path so far: {trail}")
+
+                    if reached_now:
                         reached = True
                         break
                     for other_key, next_hop in edges.get(to_key, []):
@@ -885,7 +894,7 @@ class Pipeline:
         if not reached:
             stop_reason = "frontier exhausted (nothing left to try)" if not frontier else "test budget hit"
             print(f"  stopped: {stop_reason}")
-        print(f"pathfind: {tests} tests, {len(path_edges)} hops, date={committed_date}, reached={reached}")
+        print(f"pathfind: {tests} attempts, {len(path_edges)} hops, date={committed_date}, reached={reached}")
         if global_pts is None:
             return []
         return [(global_pts, global_cols, path_edges, committed_date, reached)]
