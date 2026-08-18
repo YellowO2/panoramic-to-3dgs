@@ -889,37 +889,3 @@ class Pipeline:
         if global_pts is None:
             return []
         return [(global_pts, global_cols, path_edges, committed_date, reached)]
-
-    def test_pairs(
-        self,
-        pairs: list[tuple[str, str]],
-        dist_thresh: float = 0.2,
-        angle_thresh: float = 1,
-        step_degrees: int = 20,
-    ) -> list[tuple[int, int, int, int]]:
-        """One-off diagnostic: real DA3 pairwise test on each given (path_a,
-        path_b), one DA3Model load reused across all of them. Returns
-        (kept_a, total_a, kept_b, total_b) per pair, same order as `pairs` --
-        no health-check verdict here, just the raw numbers, since this is
-        for eyeballing a success rate, not for reconstruction."""
-        cfg = self.config
-        da3 = DA3Model(cfg.da3_model)
-        results = []
-        try:
-            with tempfile.TemporaryDirectory() as views_base:
-                for i, (path_a, path_b) in enumerate(pairs):
-                    id_a, id_b = os.path.basename(path_a), os.path.basename(path_b)
-                    pair_dir = os.path.join(views_base, f"pair{i}")
-                    os.makedirs(pair_dir, exist_ok=True)
-                    _, res, _, _, _, _ = _run_da3(
-                        path_a, [path_b], cfg, pair_dir,
-                        da3=da3, dist_thresh=dist_thresh, angle_thresh=angle_thresh, step_degrees=step_degrees,
-                    )
-                    ka, ta = res.pano_keep_counts.get(id_a, (0, 1))
-                    kb, tb = res.pano_keep_counts.get(id_b, (0, 1))
-                    print(f"pair {i}: {id_a} kept {ka}/{ta}, {id_b} kept {kb}/{tb}")
-                    results.append((ka, ta, kb, tb))
-        finally:
-            del da3
-            torch.cuda.empty_cache()
-        return results
