@@ -760,6 +760,7 @@ class Pipeline:
         angle_thresh: float = 1,
         step_degrees: int = 20,
         date_order: list[str] | None = None,
+        max_segments: int = 5,
     ) -> list[tuple[np.ndarray, np.ndarray, list, str, bool]]:
         """Best-first search over a candidate graph, start -> end, entirely
         within ONE DA3Model load (same ZeroGPU reason as the methods above).
@@ -783,17 +784,26 @@ class Pipeline:
         pano, same math as greedy's walk.
 
         If a date reaches the goal (a confirmed node within goal_tolerance_m
-        of end), that's the result -- stop trying further dates. If a date's
-        frontier runs dry or hits max_tests_per_date without reaching, it's
-        kept as a candidate partial result and the next date is tried; the
-        date whose confirmed path got closest to the goal wins if no date
-        ever reaches it.
+        of end), that's the result for this segment -- stop trying further
+        dates. If a date's frontier runs dry or hits max_tests_per_date
+        without reaching, it's kept as a candidate partial result and the
+        next date is tried; the date whose confirmed path got closest to
+        the goal wins if no date ever reaches it.
 
-        v1 limit (deferred): single segment. Doesn't stitch two different
-        dates' partial coverage together even if that would reach further.
+        Multi-segment: if a segment doesn't reach the goal, its dead-end
+        node's real lat/lon becomes the start point for a new segment (same
+        per-date search, any date -- no date is assumed to continue where
+        the last one left off, since that's exactly the case DA3 can't
+        bridge on its own). Repeats up to max_segments times, or until a
+        new segment makes no real progress toward the goal (a genuine dead
+        end, not just "this date ran out"). Segments are NOT stitched
+        together here -- each is independently placed by DA3 in its own
+        arbitrary frame; joining them (e.g. via real GPS + ICP) is a
+        separate step done by the caller.
 
-        Returns [] or a 1-element list [(pts, cols, path_edges, date,
-        reached)].
+        Returns a list of (pts, cols, path_edges, date, reached) tuples, one
+        per segment, in order from start toward end. Empty if the very
+        first segment couldn't connect anything at all.
         """
         import heapq
 
@@ -814,24 +824,22 @@ class Pipeline:
             kb, tb = res.pano_keep_counts.get(id_b, (0, 1))
             return (ka / ta) >= keep_rate_threshold and (kb / tb) >= keep_rate_threshold
 
-        # Seed roots per date: every node within start_zone_m of start.
-        roots_by_date = {}
-        for key, (_, lat, lon, date) in node_by_key.items():
-            if _haversine_m(lat, lon, start_lat, start_lon) <= start_zone_m:
-                roots_by_date.setdefault(date, []).append(key)
-
-        # Try dates in the caller's ranked order (e.g. coverage-span rank),
-        # not whatever incidental order roots_by_date happened to build in
-        # -- that order isn't guaranteed stable across runs (nodes arrives
-        # via a caller-side dict/set, whose iteration order can depend on
-        # Python's per-process string hash seed) and silently discarded the
-        # caller's actual ranking otherwise. Any date not in date_order
-        # (or if date_order is None) falls back to roots_by_date's order.
-        if date_order:
-            ordered_dates = [d for d in date_order if d in roots_by_date]
-            ordered_dates += [d for d in roots_by_date if d not in ordered_dates]
-            roots_by_date = {d: roots_by_date[d] for d in ordered_dates}
-        print(f"pathfind: {sum(len(v) for v in roots_by_date.values())} roots across {len(roots_by_date)} dates, try order: {list(roots_by_date.keys())}")
+        def roots_for(lat0, lon0):
+            """Seed roots per date: every node within start_zone_m of
+            (lat0, lon0), dates tried in the caller's ranked order (e.g.
+            coverage-span rank) where given -- roots_by_date's own
+            iteration order isn't guaranteed stable across runs otherwise
+            (nodes arrives via a caller-side dict/set, whose order can
+            depend on Python's per-process string hash seed)."""
+            roots_by_date = {}
+            for key, (_, lat, lon, date) in node_by_key.items():
+                if _haversine_m(lat, lon, lat0, lon0) <= start_zone_m:
+                    roots_by_date.setdefault(date, []).append(key)
+            if date_order:
+                ordered_dates = [d for d in date_order if d in roots_by_date]
+                ordered_dates += [d for d in roots_by_date if d not in ordered_dates]
+                roots_by_date = {d: roots_by_date[d] for d in ordered_dates}
+            return roots_by_date
 
         def search_date(date, root_keys, da3, views_base, test_offset):
             """Best-first search restricted to one date. Returns
@@ -942,31 +950,52 @@ class Pipeline:
             return gdist(path_edges[-1][1]) if path_edges else float("inf")
 
         da3 = DA3Model(cfg.da3_model)
-        best = None  # (pts, cols, path_edges, date, reached)
+        segments = []
         total_tests = 0
+        cur_lat, cur_lon = start_lat, start_lon
+        best_progress = _haversine_m(cur_lat, cur_lon, end_lat, end_lon)
 
         try:
             with tempfile.TemporaryDirectory() as views_base:
-                for date, root_keys in roots_by_date.items():
-                    print(f"pathfind: trying date {date} ({len(root_keys)} roots)")
-                    pts, cols, path_edges, reached, tests = search_date(date, root_keys, da3, views_base, total_tests)
-                    total_tests += tests
-                    if pts is None:
-                        print(f"  [{date}] no hop succeeded")
-                        continue
-                    if reached:
-                        best = (pts, cols, path_edges, date, reached)
+                for seg_i in range(max_segments):
+                    roots_by_date = roots_for(cur_lat, cur_lon)
+                    print(f"pathfind segment {seg_i + 1}: {sum(len(v) for v in roots_by_date.values())} roots across {len(roots_by_date)} dates from ({cur_lat:.6f}, {cur_lon:.6f})")
+
+                    best = None  # (pts, cols, path_edges, date, reached)
+                    for date, root_keys in roots_by_date.items():
+                        print(f"pathfind: trying date {date} ({len(root_keys)} roots)")
+                        pts, cols, path_edges, reached, tests = search_date(date, root_keys, da3, views_base, total_tests)
+                        total_tests += tests
+                        if pts is None:
+                            print(f"  [{date}] no hop succeeded")
+                            continue
+                        if reached:
+                            best = (pts, cols, path_edges, date, reached)
+                            break
+                        if best is None or final_gdist(path_edges) < final_gdist(best[2]):
+                            best = (pts, cols, path_edges, date, reached)
+
+                    if best is None:
+                        print(f"pathfind segment {seg_i + 1}: no date connected anything from this start -- stopping")
                         break
-                    if best is None or final_gdist(path_edges) < final_gdist(best[2]):
-                        best = (pts, cols, path_edges, date, reached)
+
+                    pts, cols, path_edges, date, reached = best
+                    segments.append((pts, cols, path_edges, date, reached))
+                    end_key = path_edges[-1][1]
+                    _, seg_end_lat, seg_end_lon, _ = node_by_key[end_key]
+                    new_progress = _haversine_m(seg_end_lat, seg_end_lon, end_lat, end_lon)
+                    print(f"pathfind segment {seg_i + 1}: {len(path_edges)} hops, date={date}, reached={reached}, {new_progress:.1f}m to goal")
+
+                    if reached:
+                        break
+                    if new_progress >= best_progress - 1.0:
+                        print(f"pathfind: segment {seg_i + 1} made no real progress toward goal -- stopping")
+                        break
+                    best_progress = new_progress
+                    cur_lat, cur_lon = seg_end_lat, seg_end_lon
         finally:
             del da3
             torch.cuda.empty_cache()
 
-        if best is None:
-            print(f"pathfind: {total_tests} attempts total, no date connected anything")
-            return []
-
-        pts, cols, path_edges, date, reached = best
-        print(f"pathfind: {total_tests} attempts total, best date={date}, {len(path_edges)} hops, reached={reached}")
-        return [(pts, cols, path_edges, date, reached)]
+        print(f"pathfind: {total_tests} attempts total, {len(segments)} segment(s)")
+        return segments
