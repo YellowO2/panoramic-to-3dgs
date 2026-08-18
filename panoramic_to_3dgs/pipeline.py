@@ -867,6 +867,15 @@ class Pipeline:
                 pose_a = (res.pano_poses[id_a]["center"], res.pano_poses[id_a]["rotation"])
                 pose_b = (res.pano_poses[id_b]["center"], res.pano_poses[id_b]["rotation"])
 
+                def _per_view(pano_id):
+                    """{yaw: (center, rotation)} for this pano's surviving
+                    slices in THIS call -- used to match the same physical
+                    slice across two different calls by yaw."""
+                    return {
+                        yaw: (pose["center"], pose["rotation"])
+                        for (pid, yaw), pose in res.per_view_poses.items() if pid == pano_id
+                    }
+
                 def _log_pose(label, key, cam_center, cam_rot, seg_R, seg_t):
                     """cam_center/cam_rot: this pano's own pose as DA3 reported it
                     in the current test's local frame. seg_R/seg_t: that test
@@ -894,18 +903,33 @@ class Pipeline:
 
                 if not path_edges:
                     # First success for this date: this edge's frame is the tree's base.
-                    confirmed[from_key] = {"seg_R": np.eye(3), "seg_t": np.zeros(3), "pose": pose_a}
-                    confirmed[to_key] = {"seg_R": np.eye(3), "seg_t": np.zeros(3), "pose": pose_b}
+                    confirmed[from_key] = {"seg_R": np.eye(3), "seg_t": np.zeros(3), "pose": pose_a, "per_view": _per_view(id_a)}
+                    confirmed[to_key] = {"seg_R": np.eye(3), "seg_t": np.zeros(3), "pose": pose_b, "per_view": _per_view(id_b)}
                     global_pts, global_cols = pts, cols
                     _log_pose("A", from_key, pose_a[0], pose_a[1], np.eye(3), np.zeros(3))
                     _log_pose("B", to_key, pose_b[0], pose_b[1], np.eye(3), np.zeros(3))
                 else:
                     # Align this edge's frame onto the confirmed parent, then to the tree base.
+                    # Prefer matching on every individual slice shared between
+                    # this call and the call that originally confirmed from_key
+                    # (same pano, same yaw, so it's literally the same photo
+                    # read twice) -- a multi-point rigid fit across all of
+                    # them, instead of forcing an exact match through the
+                    # single collapsed pano-level consensus alone.
                     pf = confirmed[from_key]
-                    local_R, local_t = _rigid_align([pose_a], [pf["pose"]])
+                    this_call_per_view = _per_view(id_a)
+                    shared_yaws = sorted(set(this_call_per_view) & set(pf["per_view"]))
+                    if shared_yaws:
+                        shared_from = [this_call_per_view[y] for y in shared_yaws]
+                        shared_to = [pf["per_view"][y] for y in shared_yaws]
+                        print(f"  [{date}] aligning on {len(shared_yaws)} shared slice(s) of {from_key}: yaws={shared_yaws}")
+                    else:
+                        shared_from, shared_to = [pose_a], [pf["pose"]]
+                        print(f"  [{date}] no shared slices for {from_key} between calls -- falling back to single collapsed pose")
+                    local_R, local_t = _rigid_align(shared_from, shared_to)
                     seg_R = pf["seg_R"] @ local_R
                     seg_t = pf["seg_R"] @ local_t + pf["seg_t"]
-                    confirmed[to_key] = {"seg_R": seg_R, "seg_t": seg_t, "pose": pose_b}
+                    confirmed[to_key] = {"seg_R": seg_R, "seg_t": seg_t, "pose": pose_b, "per_view": _per_view(id_b)}
                     global_pts = np.concatenate([global_pts, pts @ seg_R.T + seg_t], axis=0)
                     global_cols = np.concatenate([global_cols, cols], axis=0)
                     _log_pose("B", to_key, pose_b[0], pose_b[1], seg_R, seg_t)

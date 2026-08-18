@@ -5,10 +5,16 @@ from depth_anything_3.api import DepthAnything3
 from datatype import View
 
 class DA3Result:
-    def __init__(self, pano_poses, prediction, pano_keep_counts=None):
+    def __init__(self, pano_poses, prediction, pano_keep_counts=None, per_view_poses=None):
         self.pano_poses = pano_poses # pano_id -> {center, rotation}
         self.prediction = prediction # Filtered DA3 Prediction object
         self.pano_keep_counts = pano_keep_counts or {} # pano_id -> (kept, total)
+        # (pano_id, yaw) -> {center, rotation}: each surviving slice's own
+        # individual raw pose (not snapped to the pano consensus) -- lets a
+        # caller match the *same* slice across two separate DA3 calls for a
+        # multi-point rigid alignment, instead of aligning on the single
+        # collapsed pano-level consensus alone.
+        self.per_view_poses = per_view_poses or {}
 
 class DA3Model:
     def __init__(self, model_path="./models/models--depth-anything--DA3NESTED-GIANT-LARGE-1.1/snapshots/b2359bdf726fb44ef62acca04d629dcf158053e7", device="cuda"):
@@ -43,7 +49,7 @@ class DA3Model:
         quats = np.array([Rotation.from_matrix(global_rots[idx]).as_quat() for idx in indices])
         quats *= np.sign(quats @ quats[0])[:, None]  # flip to same hemisphere
         consensus_rot = Rotation.from_quat(quats.mean(axis=0)).as_matrix()
-        return median_center, consensus_rot, centers, R_locals
+        return median_center, consensus_rot, centers, global_rots, R_locals
 
     def _compute_pano_consensus(self, views: list[View], prediction):
         """Per-pano consensus pose (median center + mean-quaternion rotation,
@@ -61,7 +67,7 @@ class DA3Model:
 
         per_pano = {}
         for pano_id, indices in pano_groups.items():
-            median_center, consensus_pano_rot, centers, R_locals = self._consensus_pose(indices, views, prediction)
+            median_center, consensus_pano_rot, centers, global_rots, R_locals = self._consensus_pose(indices, views, prediction)
 
             per_view = []
             for idx in indices:
@@ -73,7 +79,12 @@ class DA3Model:
                 R_err = R_pred @ R_expected.T
                 angle_err = np.degrees(np.arccos(np.clip((np.trace(R_err) - 1.0) / 2.0, -1.0, 1.0)))
 
-                per_view.append({'idx': idx, 'dist': dist, 'angle_err': angle_err, 'R_local': R_local})
+                per_view.append({
+                    'idx': idx, 'dist': dist, 'angle_err': angle_err, 'R_local': R_local,
+                    # This slice's own individual raw estimate (not the pano
+                    # consensus) -- used for per-slice cross-call matching.
+                    'center': centers[idx], 'rotation': global_rots[idx],
+                })
 
             per_pano[pano_id] = {
                 'center': median_center,
@@ -91,6 +102,7 @@ class DA3Model:
         keep_indices = []
         final_pano_poses = {}
         pano_keep_counts = {}
+        per_view_poses = {}
         snapped_extrinsics = prediction.extrinsics.copy()
 
         for pano_id, data in per_pano.items():
@@ -109,12 +121,17 @@ class DA3Model:
                 # included the outliers being dropped here, which can skew
                 # it (the quaternion-mean rotation especially, see
                 # _consensus_pose). This is the pose actually used downstream.
-                final_center, final_rot, _, R_locals = self._consensus_pose(pano_keep, views, prediction)
+                final_center, final_rot, _, _, R_locals = self._consensus_pose(pano_keep, views, prediction)
                 final_pano_poses[pano_id] = {'center': final_center, 'rotation': final_rot}
-                # Snap kept views to the recomputed consensus pose.
+                # Snap kept views to the recomputed consensus pose, and
+                # separately record each kept slice's own (pre-snap) raw
+                # pose, keyed by (pano_id, yaw) -- a caller can match the
+                # same physical slice across two different DA3 calls by yaw.
                 for pv in data['per_view']:
                     if pv['idx'] not in pano_keep:
                         continue
+                    v = views[pv['idx']]
+                    per_view_poses[(pano_id, round(v.yaw, 3))] = {'center': pv['center'], 'rotation': pv['rotation']}
                     R_snapped = R_locals[pv['idx']].T @ final_rot
                     snapped_extrinsics[pv['idx'], :3, :3] = R_snapped
                     snapped_extrinsics[pv['idx'], :3, 3] = (-R_snapped @ final_center.reshape(3, 1)).flatten()
@@ -138,7 +155,7 @@ class DA3Model:
             filtered_pred.processed_images = [prediction.processed_images[i] for i in keep_indices]
 
         print(f"Cleaned scene: Kept {len(filtered_views)}/{len(views)} views. (dist_thresh={dist_thresh}, angle_thresh={angle_thresh})")
-        return filtered_views, DA3Result(final_pano_poses, filtered_pred, pano_keep_counts)
+        return filtered_views, DA3Result(final_pano_poses, filtered_pred, pano_keep_counts, per_view_poses)
 
     def process_views(self, views: list[View], dist_thresh=0.2, angle_thresh=1):
         """
