@@ -760,7 +760,7 @@ class Pipeline:
         step_degrees: int = 20,
         date_order: list[str] | None = None,
         max_segments: int = 5,
-    ) -> list[tuple[np.ndarray, np.ndarray, list, str, bool]]:
+    ) -> list[tuple[np.ndarray, np.ndarray, list, str, bool, dict]]:
         """Best-first search over a candidate graph, start -> every goal in
         `goals`, entirely within ONE DA3Model load (same ZeroGPU reason as
         the methods above).
@@ -810,10 +810,13 @@ class Pipeline:
         them (e.g. via real GPS + ICP) is a separate step done by the
         caller.
 
-        Returns a list of (pts, cols, path_edges, date, reached_all) tuples,
-        one per segment, in the order they were produced. reached_all is
-        True only for the segment (if any) after which every goal was
-        covered. Empty if the very first segment couldn't connect anything.
+        Returns a list of (pts, cols, path_edges, date, reached_all,
+        node_positions) tuples, one per segment, in the order they were
+        produced. reached_all is True only for the segment (if any) after
+        which every goal was covered. node_positions: {key: np.ndarray(3,)}
+        -- where DA3 placed each confirmed node in this segment's own
+        frame, for the caller's join step to fit against real GPS. Empty
+        if the very first segment couldn't connect anything.
         """
         import heapq
 
@@ -1016,7 +1019,13 @@ class Pipeline:
 
                     pts, cols, path_edges, date, confirmed, remaining_after = best
                     reached_all = not remaining_after
-                    segments.append((pts, cols, path_edges, date, reached_all))
+                    # Where DA3 actually placed each confirmed node in this
+                    # segment's own frame -- needed by the caller to later fit
+                    # this segment against real GPS and join it to others.
+                    node_positions = {
+                        key: c["seg_R"] @ c["pose"][0] + c["seg_t"] for key, c in confirmed.items()
+                    }
+                    segments.append((pts, cols, path_edges, date, reached_all, node_positions))
                     covered = overall_remaining - remaining_after
                     overall_remaining = remaining_after
                     print(f"pathfind segment {seg_i + 1}: {len(path_edges)} hops, date={date}, covered {len(covered)} goal(s), {len(overall_remaining)} still outstanding")
