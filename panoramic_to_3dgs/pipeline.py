@@ -851,11 +851,24 @@ class Pipeline:
                 pose_a = (res.pano_poses[id_a]["center"], res.pano_poses[id_a]["rotation"])
                 pose_b = (res.pano_poses[id_b]["center"], res.pano_poses[id_b]["rotation"])
 
+                def _log_pose(label, key, cam_center, cam_rot, seg_R, seg_t):
+                    """cam_center/cam_rot: this pano's own pose as DA3 reported it
+                    in the current test's local frame. seg_R/seg_t: that test
+                    frame's transform into the global (tree-base) frame."""
+                    from scipy.spatial.transform import Rotation
+                    global_center = seg_R @ cam_center + seg_t
+                    yaw = Rotation.from_matrix(seg_R @ cam_rot).as_euler('yxz', degrees=True)[0]
+                    lc = np.array2string(cam_center, precision=3, suppress_small=True)
+                    gc = np.array2string(global_center, precision=3, suppress_small=True)
+                    print(f"  [{date}] pose {label} {key}: local_center={lc}, global_center={gc}, global_yaw={yaw:.1f}deg")
+
                 if not path_edges:
                     # First success for this date: this edge's frame is the tree's base.
                     confirmed[from_key] = {"seg_R": np.eye(3), "seg_t": np.zeros(3), "pose": pose_a}
                     confirmed[to_key] = {"seg_R": np.eye(3), "seg_t": np.zeros(3), "pose": pose_b}
                     global_pts, global_cols = pts, cols
+                    _log_pose("A", from_key, pose_a[0], pose_a[1], np.eye(3), np.zeros(3))
+                    _log_pose("B", to_key, pose_b[0], pose_b[1], np.eye(3), np.zeros(3))
                 else:
                     # Align this edge's frame onto the confirmed parent, then to the tree base.
                     pf = confirmed[from_key]
@@ -865,6 +878,7 @@ class Pipeline:
                     confirmed[to_key] = {"seg_R": seg_R, "seg_t": seg_t, "pose": pose_b}
                     global_pts = np.concatenate([global_pts, pts @ seg_R.T + seg_t], axis=0)
                     global_cols = np.concatenate([global_cols, cols], axis=0)
+                    _log_pose("B", to_key, pose_b[0], pose_b[1], seg_R, seg_t)
                 path_edges.append((from_key, to_key))
 
                 reached_now = gdist(to_key) <= goal_tolerance_m
