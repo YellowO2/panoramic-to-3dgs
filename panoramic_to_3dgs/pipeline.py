@@ -754,7 +754,13 @@ class Pipeline:
         start_zone_m: float = 5.0,
         goal_tolerance_m: float = 15.0,
         max_tests_per_date: int = 50,
-        keep_rate_threshold: float = 0.25,
+        # Temporarily raised from 0.25 -> 0.6 (stricter than even the
+        # original 0.5 default) specifically to force more dead ends on
+        # real test runs, so join_segments has real multi-segment output to
+        # test against. Lower this back toward 0.25 once join_segments is
+        # verified -- this value trades reconstruction success rate for
+        # testability, not something to ship as-is.
+        keep_rate_threshold: float = 0.6,
         dist_thresh: float = 0.2,
         angle_thresh: float = 1,
         step_degrees: int = 20,
