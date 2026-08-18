@@ -876,7 +876,8 @@ class Pipeline:
                     yaw = Rotation.from_matrix(seg_R @ cam_rot).as_euler('yxz', degrees=True)[0]
                     lc = np.array2string(cam_center, precision=3, suppress_small=True)
                     gc = np.array2string(global_center, precision=3, suppress_small=True)
-                    print(f"  [{date}] pose {label} {key}: local_center={lc}, global_center={gc}, global_yaw={yaw:.1f}deg")
+                    _, real_lat, real_lon, _ = node_by_key[key]
+                    print(f"  [{date}] pose {label} {key}: real_latlon=({real_lat:.7f}, {real_lon:.7f}), local_center={lc}, global_center={gc}, global_yaw={yaw:.1f}deg")
 
                 if not path_edges:
                     # First success for this date: this edge's frame is the tree's base.
