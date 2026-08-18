@@ -16,41 +16,57 @@ class DA3Model:
         print(f"Loading Depth Anything 3 model from '{model_path}' on {device}...")
         self.model = DepthAnything3.from_pretrained(model_path).to(device=device)
 
+    def _consensus_pose(self, indices: list[int], views: list[View], prediction):
+        """Median center + mean-quaternion rotation across exactly the given
+        view indices. Shared by the first pass (all slices of a pano, in
+        _compute_pano_consensus) and the second pass (just the slices that
+        survived the deviation threshold, in _filter_at_threshold) -- the
+        second pass matters because a plain quaternion mean isn't robust to
+        outliers the way the median center is, so a pano's rotation can stay
+        skewed by the very slices about to be dropped unless it's
+        recomputed from the survivors alone."""
+        centers = {}
+        global_rots = {}
+        R_locals = {}
+        for idx in indices:
+            v = views[idx]
+            w2c = prediction.extrinsics[idx]
+            R_w2c, t_w2c = w2c[:3, :3], w2c[:3, 3:]
+            centers[idx] = (-R_w2c.T @ t_w2c).flatten()
+
+            # R_w2c = R_local.T @ R_pano  => R_pano = R_local @ R_w2c
+            R_local = Rotation.from_euler('yx', [v.yaw, v.pitch], degrees=True).as_matrix()
+            R_locals[idx] = R_local
+            global_rots[idx] = R_local @ R_w2c
+
+        median_center = np.median(list(centers.values()), axis=0)
+        quats = np.array([Rotation.from_matrix(global_rots[idx]).as_quat() for idx in indices])
+        quats *= np.sign(quats @ quats[0])[:, None]  # flip to same hemisphere
+        consensus_rot = Rotation.from_quat(quats.mean(axis=0)).as_matrix()
+        return median_center, consensus_rot, centers, R_locals
+
     def _compute_pano_consensus(self, views: list[View], prediction):
-        """Per-pano consensus pose (median center + mean-quaternion rotation)
-        plus each view's own (dist, angle_err) deviation from it, and the
-        R_local used to compute that deviation -- all threshold-independent,
-        so this only needs to run once per inference call regardless of how
-        many (dist_thresh, angle_thresh) levels get applied afterward."""
+        """Per-pano consensus pose (median center + mean-quaternion rotation,
+        from ALL of a pano's slices) plus each view's own (dist, angle_err)
+        deviation from it, and the R_local used to compute that deviation --
+        all threshold-independent, so this only needs to run once per
+        inference call regardless of how many (dist_thresh, angle_thresh)
+        levels get applied afterward. This first-pass consensus is only used
+        to decide which slices deviate too far to keep -- the final pose
+        used downstream is recomputed from just the survivors, see
+        _filter_at_threshold."""
         pano_groups = {}
         for i, v in enumerate(views):
             pano_groups.setdefault(v.pano_id, []).append(i)
 
         per_pano = {}
         for pano_id, indices in pano_groups.items():
-            centers = []
-            global_rots = []
-            R_locals = []
-            for idx in indices:
-                v = views[idx]
-                w2c = prediction.extrinsics[idx]
-                R_w2c, t_w2c = w2c[:3, :3], w2c[:3, 3:]
-                centers.append((-R_w2c.T @ t_w2c).flatten())
-
-                # R_w2c = R_local.T @ R_pano  => R_pano = R_local @ R_w2c
-                R_local = Rotation.from_euler('yx', [v.yaw, v.pitch], degrees=True).as_matrix()
-                R_locals.append(R_local)
-                global_rots.append(R_local @ R_w2c)
-
-            median_center = np.median(centers, axis=0)
-            quats = np.array([Rotation.from_matrix(R).as_quat() for R in global_rots])
-            quats *= np.sign(quats @ quats[0])[:, None]  # flip to same hemisphere
-            consensus_pano_rot = Rotation.from_quat(quats.mean(axis=0)).as_matrix()
+            median_center, consensus_pano_rot, centers, R_locals = self._consensus_pose(indices, views, prediction)
 
             per_view = []
-            for i, idx in enumerate(indices):
-                R_local = R_locals[i]
-                dist = np.linalg.norm(centers[i] - median_center)
+            for idx in indices:
+                R_local = R_locals[idx]
+                dist = np.linalg.norm(centers[idx] - median_center)
 
                 R_expected = R_local.T @ consensus_pano_rot
                 R_pred = prediction.extrinsics[idx][:3, :3]
@@ -88,17 +104,25 @@ class DA3Model:
 
             if pano_keep:
                 keep_indices.extend(pano_keep)
-                final_pano_poses[pano_id] = {'center': data['center'], 'rotation': data['rotation']}
-                # Snap kept views to consensus pose (shared center + consistent rotation)
+                # Recompute consensus from just the surviving slices -- the
+                # first pass's consensus (data['center']/['rotation']) still
+                # included the outliers being dropped here, which can skew
+                # it (the quaternion-mean rotation especially, see
+                # _consensus_pose). This is the pose actually used downstream.
+                final_center, final_rot, _, R_locals = self._consensus_pose(pano_keep, views, prediction)
+                final_pano_poses[pano_id] = {'center': final_center, 'rotation': final_rot}
+                # Snap kept views to the recomputed consensus pose.
                 for pv in data['per_view']:
                     if pv['idx'] not in pano_keep:
                         continue
-                    R_snapped = pv['R_local'].T @ data['rotation']
+                    R_snapped = R_locals[pv['idx']].T @ final_rot
                     snapped_extrinsics[pv['idx'], :3, :3] = R_snapped
-                    snapped_extrinsics[pv['idx'], :3, 3] = (-R_snapped @ data['center'].reshape(3, 1)).flatten()
+                    snapped_extrinsics[pv['idx'], :3, 3] = (-R_snapped @ final_center.reshape(3, 1)).flatten()
+                cx, cy, cz = final_center
+            else:
+                cx, cy, cz = data['center']
 
             pano_keep_counts[pano_id] = (len(pano_keep), len(data['per_view']))
-            cx, cy, cz = data['center']
             print(f"  pano {pano_id}: kept {len(pano_keep)}/{len(data['per_view'])}, center=({cx:.3f}, {cy:.3f}, {cz:.3f})")
 
         keep_indices = sorted(keep_indices)
