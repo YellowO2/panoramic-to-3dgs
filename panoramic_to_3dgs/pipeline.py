@@ -749,6 +749,7 @@ class Pipeline:
         dist_thresh: float = 0.2,
         angle_thresh: float = 1,
         step_degrees: int = 20,
+        date_order: list[str] | None = None,
     ) -> list[tuple[np.ndarray, np.ndarray, list, str, bool]]:
         """Best-first search over a candidate graph, start -> end, entirely
         within ONE DA3Model load (same ZeroGPU reason as the methods above).
@@ -758,9 +759,12 @@ class Pipeline:
         - edges: {key: [(other_key, dist_m), ...]} -- untested same-date hops
           from build_graph; this method runs the real DA3 test on each.
 
-        Search: one date at a time, each its own independent best-first
-        search (own frontier, own confirmed tree -- a single reconstruction
-        must be one date, no shared image to align across dates). Frontier
+        Search: one date at a time, in date_order if given (falls back to
+        whatever order roots_by_date built in for any date not listed --
+        not a stable order, see the code comment where it's used). Each
+        date is its own independent best-first search (own frontier, own
+        confirmed tree -- a single reconstruction must be one date, no
+        shared image to align across dates). Frontier
         edges scored by dist(child, end) + hop_weight * |hop - target_hop_m|
         (lower first) -- pulls toward the goal, prefers ~target_hop_m hops
         over the biggest/smallest jump. Seed: every node within
@@ -805,7 +809,19 @@ class Pipeline:
         for key, (_, lat, lon, date) in node_by_key.items():
             if _haversine_m(lat, lon, start_lat, start_lon) <= start_zone_m:
                 roots_by_date.setdefault(date, []).append(key)
-        print(f"pathfind: {sum(len(v) for v in roots_by_date.values())} roots across {len(roots_by_date)} dates")
+
+        # Try dates in the caller's ranked order (e.g. coverage-span rank),
+        # not whatever incidental order roots_by_date happened to build in
+        # -- that order isn't guaranteed stable across runs (nodes arrives
+        # via a caller-side dict/set, whose iteration order can depend on
+        # Python's per-process string hash seed) and silently discarded the
+        # caller's actual ranking otherwise. Any date not in date_order
+        # (or if date_order is None) falls back to roots_by_date's order.
+        if date_order:
+            ordered_dates = [d for d in date_order if d in roots_by_date]
+            ordered_dates += [d for d in roots_by_date if d not in ordered_dates]
+            roots_by_date = {d: roots_by_date[d] for d in ordered_dates}
+        print(f"pathfind: {sum(len(v) for v in roots_by_date.values())} roots across {len(roots_by_date)} dates, try order: {list(roots_by_date.keys())}")
 
         def search_date(date, root_keys, da3, views_base, test_offset):
             """Best-first search restricted to one date. Returns
