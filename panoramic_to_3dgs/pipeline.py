@@ -917,6 +917,8 @@ class Pipeline:
                     piece_data[pid]["path_edges"].append((from_key, to_key))
                     uncovered -= covered_points([from_key, to_key])
 
+                if not uncovered:
+                    break  # this success just finished coverage -- score() needs a non-empty uncovered
                 for other_key, next_hop in edges.get(to_key, []):
                     if (other_key in confirmed or node_by_key[other_key][3] != date
                             or frozenset((to_key, other_key)) in dead_edges):
