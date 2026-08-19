@@ -830,40 +830,44 @@ class Pipeline:
                         covered.add(pi)
             return covered
 
-        def search_from(date, root_keys, da3, views_base, test_offset, uncovered, dead_edges, budget):
+        def search_from(date, root_keys, da3, views_base, test_offset, uncovered, dead_edges, budget, confirmed, piece_data, next_piece_id):
             """Best-first walk of ONE date's graph, scored toward uncovered
             corridor points (mutated in place). Stops on full coverage,
-            dead frontier, or budget (the date's REMAINING test budget --
-            not a fixed per-call cap: a smaller fixed cap can cut off a
-            single truly-connected region mid-walk before its frontier is
-            actually exhausted, forcing map_date to "restart" and re-pay
-            for the same already-successful prefix all over again).
-            dead_edges: edges already known to fail DA3's health check
-            (mutated in place, shared across every search_from call for
-            this date -- otherwise a restart can re-seed and re-pay for
-            the same known-dead edge).
-            Returns (pts, cols, path_edges, confirmed, tests_done)."""
+            dead frontier, or budget (the date's REMAINING test budget).
+
+            confirmed, dead_edges, piece_data, next_piece_id are ALL owned
+            by map_date and persist across every search_from call for this
+            date (mutated in place here) -- a restart resumes growing the
+            same tree(s) instead of rebuilding them from scratch. Earlier
+            versions reset `confirmed` to {} per call, which meant a
+            restart near an already-fully-proven chain re-tested every
+            edge in it (paying for a real DA3 call each time) before
+            reaching the frontier's actual dead end again -- confirmed on
+            a real run where the same already-successful edge got
+            re-tested 100+ times, each one a wasted GPU call.
+
+            confirmed[key] = {"seg_R", "seg_t", "pose", "piece_id"} --
+            piece_id groups nodes sharing one DA3 base frame (a genuine
+            disconnection boundary, not a restart boundary). piece_data[id]
+            accumulates that piece's own pts/cols/path_edges across
+            however many calls contributed to it.
+
+            Returns tests_done (0 if nothing new got tested)."""
+            seed_keys = set(root_keys) | set(confirmed.keys())
             frontier = []  # (score, seq, from_key, to_key, hop)
             seq = 0
-            for root_key in root_keys:
+            for root_key in seed_keys:
                 for other_key, hop in edges.get(root_key, []):
-                    if node_by_key[other_key][3] != date or frozenset((root_key, other_key)) in dead_edges:
+                    if (other_key in confirmed or node_by_key[other_key][3] != date
+                            or frozenset((root_key, other_key)) in dead_edges):
                         continue
                     heapq.heappush(frontier, (score(other_key, hop, uncovered), seq, root_key, other_key, hop))
                     seq += 1
 
-            confirmed = {}
-            global_pts = global_cols = None
-            path_edges = []
             tests = 0
-
             while frontier and tests < budget and uncovered:
                 _, _, from_key, to_key, hop = heapq.heappop(frontier)
-                if to_key in confirmed:
-                    continue
-                if path_edges and from_key not in confirmed:
-                    continue
-                if frozenset((from_key, to_key)) in dead_edges:
+                if to_key in confirmed or frozenset((from_key, to_key)) in dead_edges:
                     continue
 
                 path_a, path_b = node_by_key[from_key][0], node_by_key[to_key][0]
@@ -876,9 +880,8 @@ class Pipeline:
                 )
                 tests += 1
                 ok = healthy(res, id_a, id_b)
-                hop_num = len(path_edges) + 1
                 status = "OK" if ok else "FAIL, trying next candidate"
-                print(f"[{date} hop {hop_num}] {from_key} -> {to_key} (hop {hop:.1f}m): {status}")
+                print(f"[{date}] {from_key} -> {to_key} (hop {hop:.1f}m): {status}")
                 if not ok:
                     dead_edges.add(frozenset((from_key, to_key)))
                     continue
@@ -886,26 +889,33 @@ class Pipeline:
                 pose_a = (res.pano_poses[id_a]["center"], res.pano_poses[id_a]["rotation"])
                 pose_b = (res.pano_poses[id_b]["center"], res.pano_poses[id_b]["rotation"])
 
-                if not path_edges:
-                    # First success for this piece: this edge's frame is the tree's base.
-                    confirmed[from_key] = {"seg_R": np.eye(3), "seg_t": np.zeros(3), "pose": pose_a}
-                    confirmed[to_key] = {"seg_R": np.eye(3), "seg_t": np.zeros(3), "pose": pose_b}
-                    global_pts, global_cols = pts, cols
+                if from_key not in confirmed:
+                    # from_key is a brand-new root: this edge's frame becomes a new piece's base.
+                    pid = next_piece_id[0]
+                    next_piece_id[0] += 1
+                    confirmed[from_key] = {"seg_R": np.eye(3), "seg_t": np.zeros(3), "pose": pose_a, "piece_id": pid}
+                    piece_data[pid] = {"pts": pts, "cols": cols, "path_edges": []}
                 else:
-                    # Align this edge's frame onto the confirmed parent, then to the tree base.
+                    # from_key already has a proven frame (this call or an earlier one) -- reuse it.
                     pf = confirmed[from_key]
+                    pid = pf["piece_id"]
                     local_R, local_t = _rigid_align([pose_a], [pf["pose"]])
                     seg_R = pf["seg_R"] @ local_R
                     seg_t = pf["seg_R"] @ local_t + pf["seg_t"]
-                    confirmed[to_key] = {"seg_R": seg_R, "seg_t": seg_t, "pose": pose_b}
-                    global_pts = np.concatenate([global_pts, pts @ seg_R.T + seg_t], axis=0)
-                    global_cols = np.concatenate([global_cols, cols], axis=0)
-                path_edges.append((from_key, to_key))
+                    pd = piece_data[pid]
+                    pd["pts"] = np.concatenate([pd["pts"], pts @ seg_R.T + seg_t], axis=0)
+                    pd["cols"] = np.concatenate([pd["cols"], cols], axis=0)
+                    confirmed[to_key] = {"seg_R": seg_R, "seg_t": seg_t, "pose": pose_b, "piece_id": pid}
+                    piece_data[pid]["path_edges"].append((from_key, to_key))
+                    newly = covered_points([to_key])
+                    uncovered -= newly
+                    print(f"  [{date}] {from_key} -> {to_key} confirmed ({len(uncovered)} corridor point(s) still uncovered)")
 
-                newly = covered_points([to_key])
-                uncovered -= newly
-                trail = " -> ".join([path_edges[0][0]] + [e[1] for e in path_edges])
-                print(f"  [{date}] path so far: {trail} ({len(uncovered)} corridor point(s) still uncovered)")
+                if to_key not in confirmed:
+                    # from_key was the brand-new-root case above -- finish confirming to_key too.
+                    confirmed[to_key] = {"seg_R": np.eye(3), "seg_t": np.zeros(3), "pose": pose_b, "piece_id": pid}
+                    piece_data[pid]["path_edges"].append((from_key, to_key))
+                    uncovered -= covered_points([from_key, to_key])
 
                 for other_key, next_hop in edges.get(to_key, []):
                     if (other_key in confirmed or node_by_key[other_key][3] != date
@@ -914,39 +924,39 @@ class Pipeline:
                     heapq.heappush(frontier, (score(other_key, next_hop, uncovered), seq, to_key, other_key, next_hop))
                     seq += 1
 
-            return global_pts, global_cols, path_edges, confirmed, tests
+            return tests
 
         def map_date(date, da3, views_base, test_offset, budget):
             """Phase 1 for ONE date. See the method docstring. Returns
             (pieces, tests_used); pieces: list of (pts, cols, path_edges,
             node_positions, covered_point_indices)."""
-            pieces = []
             tests_used = 0
             uncovered = set(range(len(points)))
-            confirmed_pool = {}  # key -> (lat, lon), every node THIS DATE has confirmed so far, any piece
-            dead_edges = set()  # edges already known to fail, shared across every restart below
+            dead_edges = set()
+            confirmed = {}  # persists across every restart below -- see search_from
+            piece_data = {}
+            next_piece_id = [0]
             cur_lat, cur_lon = start_lat, start_lon
 
             while uncovered and tests_used < budget:
                 roots = roots_for_date(cur_lat, cur_lon, date)
                 if not roots:
                     break
-                pts, cols, path_edges, confirmed, tests = search_from(date, roots, da3, views_base, test_offset + tests_used, uncovered, dead_edges, budget - tests_used)
+                tests = search_from(date, roots, da3, views_base, test_offset + tests_used, uncovered, dead_edges, budget - tests_used, confirmed, piece_data, next_piece_id)
                 tests_used += tests
-                if pts is None:
+                if tests == 0:
                     break  # nothing further reachable for this date from here
-
-                node_positions = {k: c["seg_R"] @ c["pose"][0] + c["seg_t"] for k, c in confirmed.items()}
-                piece_covered = covered_points(confirmed.keys())
-                uncovered -= piece_covered
-                pieces.append((pts, cols, path_edges, node_positions, piece_covered))
-                confirmed_pool.update({k: (node_by_key[k][1], node_by_key[k][2]) for k in confirmed})
 
                 if not uncovered:
                     break
-                next_key = min(confirmed_pool, key=lambda k: nearest_uncovered_dist(k, uncovered))
-                cur_lat, cur_lon = confirmed_pool[next_key]
+                next_key = min(confirmed, key=lambda k: nearest_uncovered_dist(k, uncovered))
+                _, cur_lat, cur_lon, _ = node_by_key[next_key]
 
+            pieces = []
+            for pid, pd in piece_data.items():
+                keys = [k for k, c in confirmed.items() if c["piece_id"] == pid]
+                node_positions = {k: confirmed[k]["seg_R"] @ confirmed[k]["pose"][0] + confirmed[k]["seg_t"] for k in keys}
+                pieces.append((pd["pts"], pd["cols"], pd["path_edges"], node_positions, covered_points(keys)))
             return pieces, tests_used
 
         def set_cover(pieces, total_points):
