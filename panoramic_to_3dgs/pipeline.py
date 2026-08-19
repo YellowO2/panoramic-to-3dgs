@@ -830,16 +830,19 @@ class Pipeline:
                         covered.add(pi)
             return covered
 
-        def search_from(date, root_keys, da3, views_base, test_offset, uncovered):
+        def search_from(date, root_keys, da3, views_base, test_offset, uncovered, dead_edges):
             """Best-first walk of ONE date's graph, scored toward uncovered
             corridor points (mutated in place). Stops on full coverage,
-            dead frontier, or max_tests_per_date. Returns (pts, cols,
-            path_edges, confirmed, tests_done)."""
+            dead frontier, or max_tests_per_date. dead_edges: edges already
+            known to fail DA3's health check (mutated in place, shared
+            across every search_from call for this date -- otherwise a
+            restart can re-seed and re-pay for the same known-dead edge).
+            Returns (pts, cols, path_edges, confirmed, tests_done)."""
             frontier = []  # (score, seq, from_key, to_key, hop)
             seq = 0
             for root_key in root_keys:
                 for other_key, hop in edges.get(root_key, []):
-                    if node_by_key[other_key][3] != date:
+                    if node_by_key[other_key][3] != date or frozenset((root_key, other_key)) in dead_edges:
                         continue
                     heapq.heappush(frontier, (score(other_key, hop, uncovered), seq, root_key, other_key, hop))
                     seq += 1
@@ -854,6 +857,8 @@ class Pipeline:
                 if to_key in confirmed:
                     continue
                 if path_edges and from_key not in confirmed:
+                    continue
+                if frozenset((from_key, to_key)) in dead_edges:
                     continue
 
                 path_a, path_b = node_by_key[from_key][0], node_by_key[to_key][0]
@@ -870,6 +875,7 @@ class Pipeline:
                 status = "OK" if ok else "FAIL, trying next candidate"
                 print(f"[{date} hop {hop_num}] {from_key} -> {to_key} (hop {hop:.1f}m): {status}")
                 if not ok:
+                    dead_edges.add(frozenset((from_key, to_key)))
                     continue
 
                 pose_a = (res.pano_poses[id_a]["center"], res.pano_poses[id_a]["rotation"])
@@ -897,7 +903,8 @@ class Pipeline:
                 print(f"  [{date}] path so far: {trail} ({len(uncovered)} corridor point(s) still uncovered)")
 
                 for other_key, next_hop in edges.get(to_key, []):
-                    if other_key in confirmed or node_by_key[other_key][3] != date:
+                    if (other_key in confirmed or node_by_key[other_key][3] != date
+                            or frozenset((to_key, other_key)) in dead_edges):
                         continue
                     heapq.heappush(frontier, (score(other_key, next_hop, uncovered), seq, to_key, other_key, next_hop))
                     seq += 1
@@ -912,13 +919,14 @@ class Pipeline:
             tests_used = 0
             uncovered = set(range(len(points)))
             confirmed_pool = {}  # key -> (lat, lon), every node THIS DATE has confirmed so far, any piece
+            dead_edges = set()  # edges already known to fail, shared across every restart below
             cur_lat, cur_lon = start_lat, start_lon
 
             while uncovered and tests_used < budget:
                 roots = roots_for_date(cur_lat, cur_lon, date)
                 if not roots:
                     break
-                pts, cols, path_edges, confirmed, tests = search_from(date, roots, da3, views_base, test_offset + tests_used, uncovered)
+                pts, cols, path_edges, confirmed, tests = search_from(date, roots, da3, views_base, test_offset + tests_used, uncovered, dead_edges)
                 tests_used += tests
                 if pts is None:
                     break  # nothing further reachable for this date from here
