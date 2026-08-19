@@ -830,13 +830,18 @@ class Pipeline:
                         covered.add(pi)
             return covered
 
-        def search_from(date, root_keys, da3, views_base, test_offset, uncovered, dead_edges):
+        def search_from(date, root_keys, da3, views_base, test_offset, uncovered, dead_edges, budget):
             """Best-first walk of ONE date's graph, scored toward uncovered
             corridor points (mutated in place). Stops on full coverage,
-            dead frontier, or max_tests_per_date. dead_edges: edges already
-            known to fail DA3's health check (mutated in place, shared
-            across every search_from call for this date -- otherwise a
-            restart can re-seed and re-pay for the same known-dead edge).
+            dead frontier, or budget (the date's REMAINING test budget --
+            not a fixed per-call cap: a smaller fixed cap can cut off a
+            single truly-connected region mid-walk before its frontier is
+            actually exhausted, forcing map_date to "restart" and re-pay
+            for the same already-successful prefix all over again).
+            dead_edges: edges already known to fail DA3's health check
+            (mutated in place, shared across every search_from call for
+            this date -- otherwise a restart can re-seed and re-pay for
+            the same known-dead edge).
             Returns (pts, cols, path_edges, confirmed, tests_done)."""
             frontier = []  # (score, seq, from_key, to_key, hop)
             seq = 0
@@ -852,7 +857,7 @@ class Pipeline:
             path_edges = []
             tests = 0
 
-            while frontier and tests < max_tests_per_date and uncovered:
+            while frontier and tests < budget and uncovered:
                 _, _, from_key, to_key, hop = heapq.heappop(frontier)
                 if to_key in confirmed:
                     continue
@@ -926,7 +931,7 @@ class Pipeline:
                 roots = roots_for_date(cur_lat, cur_lon, date)
                 if not roots:
                     break
-                pts, cols, path_edges, confirmed, tests = search_from(date, roots, da3, views_base, test_offset + tests_used, uncovered, dead_edges)
+                pts, cols, path_edges, confirmed, tests = search_from(date, roots, da3, views_base, test_offset + tests_used, uncovered, dead_edges, budget - tests_used)
                 tests_used += tests
                 if pts is None:
                     break  # nothing further reachable for this date from here
