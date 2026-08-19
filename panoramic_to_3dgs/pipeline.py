@@ -880,10 +880,9 @@ class Pipeline:
                 )
                 tests += 1
                 ok = healthy(res, id_a, id_b)
-                status = "OK" if ok else "FAIL, trying next candidate"
-                print(f"[{date}] {from_key} -> {to_key} (hop {hop:.1f}m): {status}")
                 if not ok:
                     dead_edges.add(frozenset((from_key, to_key)))
+                    print(f"[{date}] {from_key} -> {to_key}: FAIL")
                     continue
 
                 pose_a = (res.pano_poses[id_a]["center"], res.pano_poses[id_a]["rotation"])
@@ -907,9 +906,7 @@ class Pipeline:
                     pd["cols"] = np.concatenate([pd["cols"], cols], axis=0)
                     confirmed[to_key] = {"seg_R": seg_R, "seg_t": seg_t, "pose": pose_b, "piece_id": pid}
                     piece_data[pid]["path_edges"].append((from_key, to_key))
-                    newly = covered_points([to_key])
-                    uncovered -= newly
-                    print(f"  [{date}] {from_key} -> {to_key} confirmed ({len(uncovered)} corridor point(s) still uncovered)")
+                    uncovered -= covered_points([to_key])
 
                 if to_key not in confirmed:
                     # from_key was the brand-new-root case above -- finish confirming to_key too.
@@ -917,6 +914,7 @@ class Pipeline:
                     piece_data[pid]["path_edges"].append((from_key, to_key))
                     uncovered -= covered_points([from_key, to_key])
 
+                print(f"[{date}] {from_key} -> {to_key}: OK ({len(uncovered)} pt(s) left)")
                 if not uncovered:
                     break  # this success just finished coverage -- score() needs a non-empty uncovered
                 for other_key, next_hop in edges.get(to_key, []):
