@@ -762,66 +762,36 @@ class Pipeline:
         top_n_dates: int = 5,
         early_exit_segments: int = 4,
     ) -> list[tuple[np.ndarray, np.ndarray, list, str, bool, dict]]:
-        """Two-phase pathfind, entirely within ONE DA3Model load (same
-        ZeroGPU reason as the methods above): (1) map each of the top
-        candidate dates' own reachable structure across the corridor
-        independently -- however many disconnected pieces that date
-        naturally has, not stopping at any particular target, covering as
-        much of the real traced corridor as that date's own connectivity
-        allows; (2) greedy set-cover the best combination of pieces across
-        every date mapped, picking the fewest pieces that cover the most
-        of the corridor.
+        """Two-phase pathfind. One DA3Model load (ZeroGPU).
 
-        Why not search toward specific target points directly (the earlier
-        v1 design): a single continuous walk can only chase one
-        direction/branch at a time, so if a selection spans several
-        disconnected branches, an earlier segment greedily using up one
-        direction forces LATER segments into one-branch-at-a-time cleanup
-        -- even when a single other date could have covered several
-        branches at once via its own naturally disconnected pieces, which
-        is undiscoverable without first seeing the whole per-date picture.
+        - Phase 1 (map_date): per date (top_n_dates, ranked by date_order),
+          best-first walk its own graph toward uncovered corridor points.
+          On dead end, restart from that date's own closest-confirmed node
+          across ALL its pieces so far. Produces N disconnected pieces per
+          date. Early-exits date exploration once pieces so far already
+          need < early_exit_segments to fully cover the corridor.
+        - Phase 2 (set_cover): greedy set cover over every piece from every
+          date mapped -- picks fewest pieces covering the most corridor.
 
-        Inputs (all pre-downloaded by the caller -- no network here):
+        Why not search toward goal points directly (earlier v1 design): one
+        walk only chases one branch at a time, so N disconnected branches
+        force N segments -- even when a single other date's own pieces
+        could've covered several branches at once. Not discoverable without
+        seeing the whole per-date picture first.
+
+        Inputs (pre-downloaded by caller, no network here):
         - nodes: (key, path, lat, lon, date) per candidate pano.
-        - edges: {key: [(other_key, dist_m), ...]} -- untested same-date hops
-          from build_graph; this method runs the real DA3 test on each.
-        - points: [(lat, lon), ...] -- the corridor's own traced spine (the
-          same spacing used to gather these candidates in the first place).
-          "Coverage" is measured against this, not against specific target
-          nodes -- points are a shared, date-independent reference, so
-          coverage from two different dates (which never share any of the
-          same real panos) is directly comparable.
+        - edges: {key: [(other_key, dist_m), ...]} untested same-date hops.
+        - points: corridor's traced spine -- shared, date-independent
+          coverage reference (dates never share real panos).
 
-        Phase 1 (map_date, per date): a best-first walk of that one date's
-        graph, scored by distance to the nearest still-uncovered corridor
-        point (see search_from). When a walk's frontier dies, restart from
-        whichever node this SAME date has confirmed so far (across every
-        piece found for it, not just the latest -- an earlier design only
-        looked at the latest piece, which meant a second gap discovered
-        after fixing a first one could get a needlessly bad restart point)
-        that's closest to any point still uncovered. Repeats until the
-        whole corridor is covered, this date's candidates run out, or its
-        own test budget is spent. Tried in date_order (best-ranked first)
-        for up to top_n_dates dates, but stops early once the pieces found
-        SO FAR can already cover everything in fewer than early_exit_segments
-        segments -- exhaustively mapping every date is real GPU cost, not
-        worth it once a clearly good combination is already in hand.
+        Segments are NOT stitched together -- each is DA3's own arbitrary
+        frame; joining (GPS + ICP) is the caller's job.
 
-        Phase 2 (set_cover): standard greedy set cover over every piece
-        found across every date mapped -- repeatedly take whichever piece
-        covers the most still-uncovered corridor points (from any date),
-        until the corridor's covered or nothing left adds anything new.
-
-        Segments are NOT stitched together here -- each is independently
-        placed by DA3 in its own arbitrary frame; joining them (e.g. via
-        real GPS + ICP) is a separate step done by the caller.
-
-        Returns a list of (pts, cols, path_edges, date, reached_all,
-        node_positions) tuples, the final chosen combination from phase 2.
-        reached_all is True only if the whole corridor ended up covered.
-        node_positions: {key: np.ndarray(3,)} -- where DA3 placed each
-        confirmed node in that piece's own frame, for the caller's join
-        step to fit against real GPS. Empty if nothing connected at all.
+        Returns [(pts, cols, path_edges, date, reached_all, node_positions), ...],
+        phase 2's chosen pieces. reached_all: whole corridor covered.
+        node_positions: {key: np.ndarray(3,)}, DA3's placement in that
+        piece's own frame, for the caller's join step.
         """
         import heapq
 
@@ -861,12 +831,10 @@ class Pipeline:
             return covered
 
         def search_from(date, root_keys, da3, views_base, test_offset, uncovered):
-            """Best-first walk of ONE date's graph from root_keys, scored
-            by distance to the nearest still-uncovered corridor point
-            (uncovered mutated in place as points get covered -- caller
-            reads it back afterward). Stops once nothing's left uncovered,
-            the frontier dies, or max_tests_per_date is hit. Returns
-            (pts, cols, path_edges, confirmed, tests_done)."""
+            """Best-first walk of ONE date's graph, scored toward uncovered
+            corridor points (mutated in place). Stops on full coverage,
+            dead frontier, or max_tests_per_date. Returns (pts, cols,
+            path_edges, confirmed, tests_done)."""
             frontier = []  # (score, seq, from_key, to_key, hop)
             seq = 0
             for root_key in root_keys:
