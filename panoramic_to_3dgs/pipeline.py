@@ -27,12 +27,15 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * earth_radius_m * atan2(sqrt(a), sqrt(1 - a))
 
 
-def _rigid_align(shared_from: list[tuple[np.ndarray, np.ndarray]], shared_to: list[tuple[np.ndarray, np.ndarray]]) -> tuple[np.ndarray, np.ndarray]:
+def rigid_align(shared_from: list[tuple[np.ndarray, np.ndarray]], shared_to: list[tuple[np.ndarray, np.ndarray]]) -> tuple[np.ndarray, np.ndarray]:
     """Average rigid transform (R, t) mapping the 'from' frame onto the 'to'
     frame, given 1+ shared anchor poses (center, rotation) expressed in both.
     Rotation averaged via quaternion mean, translation directly -- used by
     run_windowed_reconstruction and run_greedy_pass_reconstruction to align
-    one window's DA3 output onto the previous window's frame.
+    one window's DA3 output onto the previous window's frame. Public (no
+    GPU dependency, pure linear algebra) -- callers stitching poses from
+    test_edge_da3 results outside this package (e.g. a client-side pathfind
+    algorithm) use this directly instead of duplicating the math.
 
     r_from/r_to are world-to-pano rotations for the SAME physical anchor,
     expressed in each call's own arbitrary world frame (v_pano = r @ v_world).
@@ -53,6 +56,53 @@ def _rigid_align(shared_from: list[tuple[np.ndarray, np.ndarray]], shared_to: li
     quats = np.array([Rotation.from_matrix(R).as_quat() for R in Rs])
     quats *= np.sign(quats @ quats[0])[:, None]
     return Rotation.from_quat(quats.mean(axis=0)).as_matrix(), np.mean(ts, axis=0)
+
+
+_rigid_align = rigid_align  # internal alias, unchanged call sites below
+
+
+def test_edge_da3(
+    path_a: str,
+    path_b: str,
+    cfg: "PipelineConfig",
+    views_base: str,
+    da3: "DA3Model",
+    test_id: int | str = 0,
+    dist_thresh: float = 0.2,
+    angle_thresh: float = 1,
+    step_degrees: int = 20,
+    keep_rate_threshold: float = 0.6,
+):
+    """The GPU-side primitive a client-side graph algorithm calls once per
+    candidate edge: run one real pairwise DA3 test between two already-
+    downloaded panos, using an already-loaded DA3Model (loading is
+    expensive -- callers making many calls in one ZeroGPU session should
+    load once and reuse, same as _run_da3's own da3= parameter).
+
+    This is deliberately the ONLY thing this package knows about "an edge"
+    -- no notion of dates, corridors, or coverage. Returns None if either
+    pano fails the keep-rate health check, else (pose_a, pose_b, pts,
+    cols):
+      - pose_*: (center: np.ndarray(3,), rotation: np.ndarray(3,3)) --
+        world-to-pano rotation, in THIS call's own arbitrary local frame.
+        Use rigid_align to stitch onto a caller-side accumulated frame.
+      - pts, cols: this edge's own backprojected points/colors, same local
+        frame as pose_*.
+    """
+    test_dir = os.path.join(views_base, f"t{test_id}")
+    os.makedirs(test_dir, exist_ok=True)
+    id_a, id_b = os.path.basename(path_a), os.path.basename(path_b)
+    _, res, pts, cols, _, _ = _run_da3(
+        path_a, [path_b], cfg, test_dir,
+        da3=da3, dist_thresh=dist_thresh, angle_thresh=angle_thresh, step_degrees=step_degrees,
+    )
+    ka, ta = res.pano_keep_counts.get(id_a, (0, 1))
+    kb, tb = res.pano_keep_counts.get(id_b, (0, 1))
+    if (ka / ta) < keep_rate_threshold or (kb / tb) < keep_rate_threshold:
+        return None
+    pose_a = (res.pano_poses[id_a]["center"], res.pano_poses[id_a]["rotation"])
+    pose_b = (res.pano_poses[id_b]["center"], res.pano_poses[id_b]["rotation"])
+    return pose_a, pose_b, pts, cols
 
 
 def save_da3_pointcloud(points: np.ndarray, colors: np.ndarray, path: str) -> str:
@@ -742,276 +792,3 @@ class Pipeline:
 
         return segments
 
-    def run_pathfind_reconstruction(
-        self,
-        nodes: list[tuple[str, str, float, float, str]],
-        edges: dict,
-        points: list[tuple[float, float]],
-        start_lat: float,
-        start_lon: float,
-        target_hop_m: float = 10.0,
-        hop_weight: float = 1.0,
-        start_zone_m: float = 5.0,
-        point_cover_tolerance_m: float = 15.0,
-        max_tests_per_date: int = 50,
-        keep_rate_threshold: float = 0.6,
-        dist_thresh: float = 0.2,
-        angle_thresh: float = 1,
-        step_degrees: int = 20,
-        date_order: list[str] | None = None,
-        top_n_dates: int = 5,
-        early_exit_segments: int = 4,
-    ) -> list[tuple[np.ndarray, np.ndarray, list, str, bool, dict]]:
-        """Two-phase pathfind. One DA3Model load (ZeroGPU).
-
-        - Phase 1 (map_date): per date (top_n_dates, ranked by date_order),
-          best-first walk its own graph toward uncovered corridor points.
-          On dead end, restart from that date's own closest-confirmed node
-          across ALL its pieces so far. Produces N disconnected pieces per
-          date. Early-exits date exploration once pieces so far already
-          need < early_exit_segments to fully cover the corridor.
-        - Phase 2 (set_cover): greedy set cover over every piece from every
-          date mapped -- picks fewest pieces covering the most corridor.
-
-        Why not search toward goal points directly (earlier v1 design): one
-        walk only chases one branch at a time, so N disconnected branches
-        force N segments -- even when a single other date's own pieces
-        could've covered several branches at once. Not discoverable without
-        seeing the whole per-date picture first.
-
-        Inputs (pre-downloaded by caller, no network here):
-        - nodes: (key, path, lat, lon, date) per candidate pano.
-        - edges: {key: [(other_key, dist_m), ...]} untested same-date hops.
-        - points: corridor's traced spine -- shared, date-independent
-          coverage reference (dates never share real panos).
-
-        Segments are NOT stitched together -- each is DA3's own arbitrary
-        frame; joining (GPS + ICP) is the caller's job.
-
-        Returns [(pts, cols, path_edges, date, reached_all, node_positions), ...],
-        phase 2's chosen pieces. reached_all: whole corridor covered.
-        node_positions: {key: np.ndarray(3,)}, DA3's placement in that
-        piece's own frame, for the caller's join step.
-        """
-        import heapq
-
-        cfg = self.config
-        node_by_key = {key: (path, lat, lon, date) for key, path, lat, lon, date in nodes}
-        if not node_by_key or not points:
-            return []
-
-        def pdist(lat, lon, pi):
-            return _haversine_m(lat, lon, points[pi][0], points[pi][1])
-
-        def nearest_uncovered_dist(key, uncovered):
-            _, lat, lon, _ = node_by_key[key]
-            return min(pdist(lat, lon, pi) for pi in uncovered)
-
-        def score(child_key, hop, uncovered):
-            return nearest_uncovered_dist(child_key, uncovered) + hop_weight * abs(hop - target_hop_m)
-
-        def healthy(res, id_a, id_b):
-            ka, ta = res.pano_keep_counts.get(id_a, (0, 1))
-            kb, tb = res.pano_keep_counts.get(id_b, (0, 1))
-            return (ka / ta) >= keep_rate_threshold and (kb / tb) >= keep_rate_threshold
-
-        def roots_for_date(lat0, lon0, date):
-            return [key for key, (_, lat, lon, d) in node_by_key.items()
-                    if d == date and _haversine_m(lat, lon, lat0, lon0) <= start_zone_m]
-
-        def covered_points(keys):
-            """Corridor point-indices within point_cover_tolerance_m of any
-            of the given confirmed nodes' real positions."""
-            covered = set()
-            for k in keys:
-                _, lat, lon, _ = node_by_key[k]
-                for pi in range(len(points)):
-                    if pi not in covered and pdist(lat, lon, pi) <= point_cover_tolerance_m:
-                        covered.add(pi)
-            return covered
-
-        def search_from(date, root_keys, da3, views_base, test_offset, uncovered, dead_edges, budget, confirmed, piece_data, next_piece_id):
-            """Best-first walk of ONE date's graph, scored toward uncovered
-            corridor points (mutated in place). Stops on full coverage,
-            dead frontier, or budget (the date's REMAINING test budget).
-
-            confirmed, dead_edges, piece_data, next_piece_id are ALL owned
-            by map_date and persist across every search_from call for this
-            date (mutated in place here) -- a restart resumes growing the
-            same tree(s) instead of rebuilding them from scratch. Earlier
-            versions reset `confirmed` to {} per call, which meant a
-            restart near an already-fully-proven chain re-tested every
-            edge in it (paying for a real DA3 call each time) before
-            reaching the frontier's actual dead end again -- confirmed on
-            a real run where the same already-successful edge got
-            re-tested 100+ times, each one a wasted GPU call.
-
-            confirmed[key] = {"seg_R", "seg_t", "pose", "piece_id"} --
-            piece_id groups nodes sharing one DA3 base frame (a genuine
-            disconnection boundary, not a restart boundary). piece_data[id]
-            accumulates that piece's own pts/cols/path_edges across
-            however many calls contributed to it.
-
-            Returns tests_done (0 if nothing new got tested)."""
-            seed_keys = set(root_keys) | set(confirmed.keys())
-            frontier = []  # (score, seq, from_key, to_key, hop)
-            seq = 0
-            for root_key in seed_keys:
-                for other_key, hop in edges.get(root_key, []):
-                    if (other_key in confirmed or node_by_key[other_key][3] != date
-                            or frozenset((root_key, other_key)) in dead_edges):
-                        continue
-                    heapq.heappush(frontier, (score(other_key, hop, uncovered), seq, root_key, other_key, hop))
-                    seq += 1
-
-            tests = 0
-            while frontier and tests < budget and uncovered:
-                _, _, from_key, to_key, hop = heapq.heappop(frontier)
-                if to_key in confirmed or frozenset((from_key, to_key)) in dead_edges:
-                    continue
-
-                path_a, path_b = node_by_key[from_key][0], node_by_key[to_key][0]
-                id_a, id_b = os.path.basename(path_a), os.path.basename(path_b)
-                test_dir = os.path.join(views_base, f"t{test_offset + tests}")
-                os.makedirs(test_dir, exist_ok=True)
-                _, res, pts, cols, _, _ = _run_da3(
-                    path_a, [path_b], cfg, test_dir,
-                    da3=da3, dist_thresh=dist_thresh, angle_thresh=angle_thresh, step_degrees=step_degrees,
-                )
-                tests += 1
-                ok = healthy(res, id_a, id_b)
-                if not ok:
-                    dead_edges.add(frozenset((from_key, to_key)))
-                    print(f"[{date}] {from_key} -> {to_key}: FAIL")
-                    continue
-
-                pose_a = (res.pano_poses[id_a]["center"], res.pano_poses[id_a]["rotation"])
-                pose_b = (res.pano_poses[id_b]["center"], res.pano_poses[id_b]["rotation"])
-
-                if from_key not in confirmed:
-                    # from_key is a brand-new root: this edge's frame becomes a new piece's base.
-                    pid = next_piece_id[0]
-                    next_piece_id[0] += 1
-                    confirmed[from_key] = {"seg_R": np.eye(3), "seg_t": np.zeros(3), "pose": pose_a, "piece_id": pid}
-                    piece_data[pid] = {"pts": pts, "cols": cols, "path_edges": []}
-                else:
-                    # from_key already has a proven frame (this call or an earlier one) -- reuse it.
-                    pf = confirmed[from_key]
-                    pid = pf["piece_id"]
-                    local_R, local_t = _rigid_align([pose_a], [pf["pose"]])
-                    seg_R = pf["seg_R"] @ local_R
-                    seg_t = pf["seg_R"] @ local_t + pf["seg_t"]
-                    pd = piece_data[pid]
-                    pd["pts"] = np.concatenate([pd["pts"], pts @ seg_R.T + seg_t], axis=0)
-                    pd["cols"] = np.concatenate([pd["cols"], cols], axis=0)
-                    confirmed[to_key] = {"seg_R": seg_R, "seg_t": seg_t, "pose": pose_b, "piece_id": pid}
-                    piece_data[pid]["path_edges"].append((from_key, to_key))
-                    uncovered -= covered_points([to_key])
-
-                if to_key not in confirmed:
-                    # from_key was the brand-new-root case above -- finish confirming to_key too.
-                    confirmed[to_key] = {"seg_R": np.eye(3), "seg_t": np.zeros(3), "pose": pose_b, "piece_id": pid}
-                    piece_data[pid]["path_edges"].append((from_key, to_key))
-                    uncovered -= covered_points([from_key, to_key])
-
-                print(f"[{date}] {from_key} -> {to_key}: OK ({len(uncovered)} pt(s) left)")
-                if not uncovered:
-                    break  # this success just finished coverage -- score() needs a non-empty uncovered
-                for other_key, next_hop in edges.get(to_key, []):
-                    if (other_key in confirmed or node_by_key[other_key][3] != date
-                            or frozenset((to_key, other_key)) in dead_edges):
-                        continue
-                    heapq.heappush(frontier, (score(other_key, next_hop, uncovered), seq, to_key, other_key, next_hop))
-                    seq += 1
-
-            return tests
-
-        def map_date(date, da3, views_base, test_offset, budget):
-            """Phase 1 for ONE date. See the method docstring. Returns
-            (pieces, tests_used); pieces: list of (pts, cols, path_edges,
-            node_positions, covered_point_indices)."""
-            tests_used = 0
-            uncovered = set(range(len(points)))
-            dead_edges = set()
-            confirmed = {}  # persists across every restart below -- see search_from
-            piece_data = {}
-            next_piece_id = [0]
-            cur_lat, cur_lon = start_lat, start_lon
-
-            while uncovered and tests_used < budget:
-                roots = roots_for_date(cur_lat, cur_lon, date)
-                if not roots:
-                    break
-                tests = search_from(date, roots, da3, views_base, test_offset + tests_used, uncovered, dead_edges, budget - tests_used, confirmed, piece_data, next_piece_id)
-                tests_used += tests
-                if tests == 0 or not confirmed:
-                    # tests == 0: frontier genuinely exhausted, nothing left to try.
-                    # not confirmed: every attempt this date has made so far
-                    # failed -- nothing to restart from (min() below would
-                    # crash on an empty confirmed otherwise).
-                    break
-
-                if not uncovered:
-                    break
-                next_key = min(confirmed, key=lambda k: nearest_uncovered_dist(k, uncovered))
-                _, cur_lat, cur_lon, _ = node_by_key[next_key]
-
-            pieces = []
-            for pid, pd in piece_data.items():
-                keys = [k for k, c in confirmed.items() if c["piece_id"] == pid]
-                node_positions = {k: confirmed[k]["seg_R"] @ confirmed[k]["pose"][0] + confirmed[k]["seg_t"] for k in keys}
-                pieces.append((pd["pts"], pd["cols"], pd["path_edges"], node_positions, covered_points(keys)))
-            return pieces, tests_used
-
-        def set_cover(pieces, total_points):
-            """Phase 2: greedy set cover. Repeatedly take whichever piece
-            (from any date) covers the most still-uncovered corridor
-            points, until covered or nothing left adds anything new.
-            Returns (chosen, leftover_uncovered)."""
-            uncovered = set(range(total_points))
-            chosen = []
-            pool = list(pieces)
-            while uncovered and pool:
-                pool.sort(key=lambda p: len(p[4] & uncovered), reverse=True)
-                top = pool[0]
-                if not (top[4] & uncovered):
-                    break
-                chosen.append(top)
-                uncovered -= top[4]
-                pool.pop(0)
-            return chosen, uncovered
-
-        dates_all = list(dict.fromkeys(date for _, _, _, date in node_by_key.values()))
-        dates_to_try = [d for d in date_order if d in dates_all] if date_order else dates_all
-        dates_to_try = dates_to_try[:top_n_dates]
-
-        da3 = DA3Model(cfg.da3_model)
-        all_pieces = []  # (pts, cols, path_edges, node_positions, covered, date)
-        total_tests = 0
-
-        try:
-            with tempfile.TemporaryDirectory() as views_base:
-                for date in dates_to_try:
-                    pieces, tests_used = map_date(date, da3, views_base, total_tests, max_tests_per_date * 5)
-                    total_tests += tests_used
-                    for p in pieces:
-                        all_pieces.append(p + (date,))
-                    print(f"pathfind: date {date} mapped into {len(pieces)} piece(s), {total_tests} attempts so far")
-
-                    chosen_so_far, uncovered_so_far = set_cover(all_pieces, len(points))
-                    if chosen_so_far and not uncovered_so_far and len(chosen_so_far) < early_exit_segments:
-                        print(f"pathfind: {len(chosen_so_far)} segment(s) already cover everything -- stopping date exploration")
-                        break
-
-                chosen, leftover_uncovered = set_cover(all_pieces, len(points))
-        finally:
-            del da3
-            torch.cuda.empty_cache()
-
-        reached_all = not leftover_uncovered
-        segments = [
-            (pts, cols, path_edges, date, reached_all, node_positions)
-            for pts, cols, path_edges, node_positions, covered, date in chosen
-        ]
-        print(f"pathfind: {total_tests} attempts total, {len(dates_to_try)} date(s) considered, {len(all_pieces)} piece(s) found, {len(segments)} segment(s) chosen, corridor {'fully' if reached_all else 'partially'} covered ({len(leftover_uncovered)}/{len(points)} point(s) never covered)")
-        return segments
