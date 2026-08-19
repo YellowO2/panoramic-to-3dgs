@@ -168,7 +168,83 @@ SCENARIOS = [
 ]
 
 
+def run_fuzz(seed, fail_rate, n_dates=3, nodes_per_date=6, spacing_m=15.0):
+    """Randomized stress test: a synthetic multi-date graph (chain topology
+    per date, some extra cross-links), DA3 pass/fail decided by a coin flip
+    PER PAIR (same pair always gets the same outcome, since real DA3 would
+    give the same answer if re-tested -- this is what would catch a
+    duplicate-testing regression). Returns (segments, test_log, tested_pairs).
+    Raises whatever the real pipeline raises -- fuzzing is exactly for
+    catching crashes a curated scenario wouldn't think to construct."""
+    import random
+    rng = random.Random(seed)
+
+    node_specs = {}
+    edge_specs = {}
+    for d in range(n_dates):
+        date = f"date{d}"
+        offsets = sorted(rng.uniform(0, (nodes_per_date - 1) * spacing_m) for _ in range(nodes_per_date))
+        keys = [f"d{d}n{i}" for i in range(nodes_per_date)]
+        for k, off in zip(keys, offsets):
+            node_specs[k] = (off, date)
+            edge_specs[k] = []
+        # chain (guarantees connectivity) + a few random extra same-date edges
+        for i in range(nodes_per_date - 1):
+            dist = offsets[i + 1] - offsets[i]
+            edge_specs[keys[i]].append((keys[i + 1], dist))
+            edge_specs[keys[i + 1]].append((keys[i], dist))
+        for _ in range(nodes_per_date // 2):
+            i, j = rng.sample(range(nodes_per_date), 2)
+            dist = abs(offsets[i] - offsets[j])
+            edge_specs[keys[i]].append((keys[j], dist))
+            edge_specs[keys[j]].append((keys[i], dist))
+
+    point_offsets = sorted(off for off, _ in node_specs.values())
+
+    tested_pairs = {}
+
+    def fake_run_da3(target_depth_path, support_paths, cfg, views_base, da3=None,
+                      dist_thresh=0.2, angle_thresh=1, step_degrees=20):
+        id_a = os.path.basename(target_depth_path)
+        id_b = os.path.basename(support_paths[0])
+        pair = frozenset({id_a, id_b})
+        if pair not in tested_pairs:
+            tested_pairs[pair] = rng.random() >= fail_rate
+        ok = tested_pairs[pair]
+        keep_counts = {id_a: (1 if ok else 0, 1), id_b: (1 if ok else 0, 1)}
+        poses = {id_a: {"center": np.zeros(3), "rotation": np.eye(3)},
+                 id_b: {"center": np.zeros(3), "rotation": np.eye(3)}}
+        res = SimpleNamespace(pano_keep_counts=keep_counts, pano_poses=poses)
+        return None, res, np.zeros((2, 3)), np.zeros((2, 3)), None, None
+
+    test_log = []
+    real_fake = fake_run_da3
+
+    def logging_fake(*a, **k):
+        target_depth_path, support_paths = a[0], a[1]
+        test_log.append((os.path.basename(target_depth_path), os.path.basename(support_paths[0])))
+        return real_fake(*a, **k)
+
+    pipeline_mod._run_da3 = logging_fake
+    pipeline_mod.DA3Model = FakeDA3Model
+    pipeline_mod.torch.cuda.empty_cache = lambda: None
+
+    nodes = [(key, f"/fake/{key}", *latlon(off), date) for key, (off, date) in node_specs.items()]
+    points = [latlon(off) for off in point_offsets]
+    pipeline = pipeline_mod.Pipeline.__new__(pipeline_mod.Pipeline)
+    pipeline.config = SimpleNamespace(da3_model="unused")
+    start_lat, start_lon = latlon(point_offsets[0])
+
+    segments = pipeline.run_pathfind_reconstruction(
+        nodes, edge_specs, points, start_lat, start_lon, top_n_dates=n_dates,
+    )
+    return segments, test_log, tested_pairs
+
+
 if __name__ == "__main__":
+    import contextlib
+    import io
+
     failures = []
     for sc in SCENARIOS:
         segs, log = run_scenario(
@@ -181,8 +257,32 @@ if __name__ == "__main__":
         if not ok:
             failures.append(sc["name"])
 
+    print(f"\n{'=' * 60}\nFuzz: randomized graphs x randomized DA3 pass/fail\n{'=' * 60}")
+    fuzz_failures = []
+    for fail_rate in (0.2, 0.4, 0.6, 0.8):
+        crashes = 0
+        dupes = 0
+        max_calls = 0
+        for seed in range(30):
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    segs, log, tested_pairs = run_fuzz(seed=seed * 1000 + int(fail_rate * 10), fail_rate=fail_rate)
+            except Exception as e:
+                crashes += 1
+                print(f"  fail_rate={fail_rate} seed={seed}: CRASH {type(e).__name__}: {e}")
+                continue
+            dup = len(log) - len(set(frozenset(e) for e in log))
+            dupes += dup
+            max_calls = max(max_calls, len(log))
+        print(f"fail_rate={fail_rate}: 30 seeds, crashes={crashes}, duplicate_calls={dupes}, max_calls_seen={max_calls}")
+        if crashes or dupes:
+            fuzz_failures.append(fail_rate)
+
     print(f"\n{'=' * 60}")
-    if failures:
-        print(f"{len(failures)}/{len(SCENARIOS)} scenario(s) FAILED: {failures}")
+    if failures or fuzz_failures:
+        if failures:
+            print(f"{len(failures)}/{len(SCENARIOS)} curated scenario(s) FAILED: {failures}")
+        if fuzz_failures:
+            print(f"fuzz FAILED at fail_rate(s): {fuzz_failures}")
         sys.exit(1)
-    print(f"All {len(SCENARIOS)} scenarios passed.")
+    print(f"All {len(SCENARIOS)} curated scenarios + fuzz (120 randomized runs) passed.")

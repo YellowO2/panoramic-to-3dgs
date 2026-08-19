@@ -946,8 +946,12 @@ class Pipeline:
                     break
                 tests = search_from(date, roots, da3, views_base, test_offset + tests_used, uncovered, dead_edges, budget - tests_used, confirmed, piece_data, next_piece_id)
                 tests_used += tests
-                if tests == 0:
-                    break  # nothing further reachable for this date from here
+                if tests == 0 or not confirmed:
+                    # tests == 0: frontier genuinely exhausted, nothing left to try.
+                    # not confirmed: every attempt this date has made so far
+                    # failed -- nothing to restart from (min() below would
+                    # crash on an empty confirmed otherwise).
+                    break
 
                 if not uncovered:
                     break
