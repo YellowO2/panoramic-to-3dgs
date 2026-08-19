@@ -994,18 +994,7 @@ class Pipeline:
         try:
             with tempfile.TemporaryDirectory() as views_base:
                 for seg_i in range(max_segments):
-                    # Fresh baseline every segment: how far this segment's
-                    # own start is from whatever's still outstanding RIGHT
-                    # NOW. Must be recomputed here, not carried forward from
-                    # before this segment ran -- a single running value
-                    # computed once against the ORIGINAL full goal set (most
-                    # of which past segments may have already consumed) goes
-                    # stale fast: e.g. if some goal sat right at the very
-                    # first start (distance ~0), that near-zero baseline
-                    # would make "did we get closer to the REMAINING goals"
-                    # always look false after the first segment, regardless
-                    # of whether real progress toward them was possible.
-                    start_dist_to_remaining = min(gdist_point(cur_lat, cur_lon, goals[gi]) for gi in overall_remaining)
+                    seg_start_lat, seg_start_lon = cur_lat, cur_lon
                     roots_by_date = roots_for(cur_lat, cur_lon)
                     print(f"pathfind segment {seg_i + 1}: {sum(len(v) for v in roots_by_date.values())} roots across {len(roots_by_date)} dates from ({cur_lat:.6f}, {cur_lon:.6f}), {len(overall_remaining)} goal(s) outstanding")
 
@@ -1049,6 +1038,14 @@ class Pipeline:
 
                     if not overall_remaining:
                         break
+                    # Baseline computed AFTER this segment ran, against the
+                    # goals it actually left behind (same set next_dist
+                    # uses) -- not the broader pre-segment set, which
+                    # would include goals this very segment just solved and
+                    # could be closer to the start than any of the genuinely
+                    # hard ones, making "did we get closer" look false
+                    # almost immediately regardless of real progress.
+                    start_dist_to_remaining = min(gdist_point(seg_start_lat, seg_start_lon, goals[gi]) for gi in overall_remaining)
                     next_key, next_dist = confirmed_nearest(confirmed, overall_remaining)
                     if next_key is None or next_dist >= start_dist_to_remaining - 1.0:
                         print(f"pathfind: segment {seg_i + 1} made no real progress toward remaining goals -- stopping")
