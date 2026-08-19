@@ -27,17 +27,23 @@ class Saver:
         print(f"Saved depth image to: {path}")
 
     @staticmethod
-    def save_point_cloud(points: np.ndarray, path: str, colors: np.ndarray = None):
+    def save_point_cloud(points: np.ndarray, path: str, colors: np.ndarray = None, voxel_size: float = 0.03):
         """
         Saves a raw XYZ point cloud (N, 3) to a PLY file.
         Args:
             points: (N, 3) array of XYZ points.
             path: Output path.
             colors: (N, 3) normalized RGB colors OR (H, W, 3) image.
+            voxel_size: bin points into a uniform 3D grid (meters) and keep
+                one per occupied cell before writing -- catches
+                near-duplicate points the per-view angular wedge trim
+                doesn't (e.g. redundant coverage between adjacent panos
+                along a walked path, not just between one pano's own view
+                slices). Set to 0/None to skip.
         """
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(points)
-        
+
         if colors is not None:
             if colors.ndim == 2 and colors.shape[0] == points.shape[0]:
                 # Already a list of colors (normalized 0-1)
@@ -51,6 +57,11 @@ class Saver:
                     pcd.colors = o3d.utility.Vector3dVector(flat_colors)
                 else:
                     print(f"Warning: Image size doesn't match point count. Skipping colors.")
-        
+
+        if voxel_size:
+            before = len(pcd.points)
+            pcd = pcd.voxel_down_sample(voxel_size)
+            print(f"Voxel downsample ({voxel_size}m): {before} -> {len(pcd.points)} points")
+
         o3d.io.write_point_cloud(path, pcd)
         print(f"Saved point cloud to: {path}")
