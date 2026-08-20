@@ -104,21 +104,28 @@ def test_edge_da3_bridge(
     step_degrees: int = 20,
 ) -> dict | None:
     """Diagnostic variant of test_edge_da3 for a client-side bridging
-    search (joining two already-built pieces that GPS alone would
-    otherwise place independently). Never gates pass/fail itself -- the
-    caller applies its own (relaxed) accept bar across several attempts,
-    using the raw keep-rate/deviation data returned here to pick the best
-    one if nothing clears that bar outright.
+    search (joining two already-built pieces -- a real DA3 estimate,
+    even a poor one, is trusted over independent GPS placement between
+    them; GPS is only ever used once, to anchor the final combined
+    result to real-world coordinates, not to reconcile pieces against
+    each other). Never gates pass/fail itself -- the caller ranks
+    several attempts using the raw keep-rate/deviation data returned
+    here and always uses the best one found, however weak.
 
-    Returns None only if a pano got ZERO kept views (no consensus pose
-    exists to offer at all -- see DA3Model._filter_at_threshold). Else a
-    dict: pose_a/pose_b (center, rotation), pts, cols (same as
-    test_edge_da3), keep_a/keep_b ((kept, total) view counts), and
-    avg_dev_a/avg_dev_b (average real-world deviation in meters among
-    that pano's own KEPT views only -- a single wild outlier gets
-    filtered out by the keep-rate check anyway, so it says nothing about
-    quality; the kept views still not agreeing well with each other on
-    average is what actually flags a bad pairing).
+    Returns None only if a pano has no pose at all in this DA3 call --
+    an extremely rare case (e.g. view extraction itself produced
+    nothing usable), since DA3Model now always provides a pose per pano
+    regardless of keep-rate (falling back to the raw pre-filter
+    consensus when nothing survives strict filtering -- see
+    DA3Model._filter_at_threshold). Else a dict: pose_a/pose_b (center,
+    rotation), pts, cols (same as test_edge_da3, empty arrays if
+    nothing survived filtering), keep_a/keep_b ((kept, total) view
+    counts), and avg_dev_a/avg_dev_b (average real-world deviation in
+    meters among that pano's own KEPT views only -- a single wild
+    outlier gets filtered out by the keep-rate check anyway, so it says
+    nothing about quality; the kept views still not agreeing well with
+    each other on average is what actually flags a bad pairing. inf if
+    zero views were kept).
     """
     test_dir = os.path.join(views_base, f"b{test_id}")
     os.makedirs(test_dir, exist_ok=True)
@@ -127,14 +134,16 @@ def test_edge_da3_bridge(
         path_a, [path_b], cfg, test_dir,
         da3=da3, dist_thresh=dist_thresh, angle_thresh=angle_thresh, step_degrees=step_degrees,
     )
+    if id_a not in res.pano_poses or id_b not in res.pano_poses:
+        return None
     ka, ta = res.pano_keep_counts.get(id_a, (0, 1))
     kb, tb = res.pano_keep_counts.get(id_b, (0, 1))
-    if ka == 0 or kb == 0 or id_a not in res.pano_poses or id_b not in res.pano_poses:
-        return None
     pose_a = (res.pano_poses[id_a]["center"], res.pano_poses[id_a]["rotation"])
     pose_b = (res.pano_poses[id_b]["center"], res.pano_poses[id_b]["rotation"])
     return {
-        "pose_a": pose_a, "pose_b": pose_b, "pts": pts, "cols": cols,
+        "pose_a": pose_a, "pose_b": pose_b,
+        "pts": pts if pts is not None else np.zeros((0, 3)),
+        "cols": cols if cols is not None else np.zeros((0, 3)),
         "keep_a": (ka, ta), "keep_b": (kb, tb),
         "avg_dev_a": res.pano_avg_deviation.get(id_a, float("inf")),
         "avg_dev_b": res.pano_avg_deviation.get(id_b, float("inf")),

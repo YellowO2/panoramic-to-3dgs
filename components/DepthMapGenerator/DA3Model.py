@@ -88,7 +88,18 @@ class DA3Model:
         per-view deviations, snapping kept views to their pano's consensus
         pose. Builds its own copy of the prediction arrays rather than
         mutating the shared one, so this is safe to call multiple times
-        against the same inference result (see process_views_sweep)."""
+        against the same inference result (see process_views_sweep).
+
+        Pose availability is NOT gated on filtering: filtered_views/
+        keep_indices (which slices actually contribute points downstream)
+        and final_pano_poses (every pano's own position estimate) are
+        separate concerns -- a pano gets a real pose in final_pano_poses
+        regardless of how many (if any) of its views survive the per-view
+        cutoff, falling back to the raw pre-filter consensus when nothing
+        does. Making pose depend on filtering succeeding was the wrong
+        coupling: a caller doing its OWN quality judgment on top (e.g. a
+        client-side bridging search comparing several candidate pairs)
+        needs the actual number to reason about, not silence."""
         keep_indices = []
         final_pano_poses = {}
         pano_keep_counts = {}
@@ -131,6 +142,15 @@ class DA3Model:
                     snapped_extrinsics[pv['idx'], :3, 3] = (-R_snapped @ final_center.reshape(3, 1)).flatten()
                 cx, cy, cz = final_center
             else:
+                # Nothing survived the per-view threshold -- pose
+                # availability shouldn't depend on filtering succeeding
+                # (that's a separate concern, see this method's docstring
+                # note below). Fall back to the raw, threshold-independent
+                # first-pass consensus computed in _compute_pano_consensus
+                # from ALL of this pano's own views -- worse than a
+                # filtered consensus, but still a real multi-view estimate,
+                # not nothing.
+                final_pano_poses[pano_id] = {'center': data['center'], 'rotation': data['rotation']}
                 cx, cy, cz = data['center']
 
             pano_keep_counts[pano_id] = (len(pano_keep), len(data['per_view']))
