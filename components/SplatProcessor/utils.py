@@ -14,7 +14,7 @@ from sharp.utils.gaussians import Gaussians3D, apply_transform
 # still gets filtered (floor) but a call never discards everything (upper
 # clamp).
 CONF_ABS_FLOOR = 1.05
-CONF_LOWER_PERCENTILE = 50.0
+CONF_LOWER_PERCENTILE = 55.0
 CONF_UPPER_PERCENTILE = 90.0
 
 
