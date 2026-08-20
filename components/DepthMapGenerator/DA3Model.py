@@ -5,9 +5,10 @@ from depth_anything_3.api import DepthAnything3
 from datatype import View
 
 class DA3Result:
-    def __init__(self, pano_poses, prediction, pano_keep_counts=None):
+    def __init__(self, pano_poses, prediction, pano_keep_counts=None, pano_avg_deviation=None):
         self.pano_poses = pano_poses # pano_id -> {center, rotation}
         self.prediction = prediction # Filtered DA3 Prediction object
+        self.pano_avg_deviation = pano_avg_deviation or {} # pano_id -> avg dist deviation (m) among its own KEPT views only -- a single wild outlier gets filtered out anyway, so it says nothing about quality; the kept views still not agreeing well with each other on average is what actually flags a bad pairing. inf if zero views were kept.
         self.pano_keep_counts = pano_keep_counts or {} # pano_id -> (kept, total)
 
 class DA3Model:
@@ -91,6 +92,7 @@ class DA3Model:
         keep_indices = []
         final_pano_poses = {}
         pano_keep_counts = {}
+        pano_avg_deviation = {}
         snapped_extrinsics = prediction.extrinsics.copy()
 
         for pano_id, data in per_pano.items():
@@ -101,6 +103,15 @@ class DA3Model:
                 else:
                     v = views[pv['idx']]
                     print(f"Filtering view {v.path}: dev_dist={pv['dist']:.3f}m, dev_angle={pv['angle_err']:.1f}deg")
+
+            # Average deviation among the SURVIVING views only -- not the
+            # worst outlier across everyone. A single wild outlier gets
+            # filtered out by the check above anyway (that's the whole
+            # point of it), so it says nothing about the pairing's real
+            # quality. What actually indicates a bad pairing is the kept
+            # views still not agreeing well with each other on average.
+            kept_devs = [pv['dist'] for pv in data['per_view'] if pv['idx'] in pano_keep]
+            pano_avg_deviation[pano_id] = sum(kept_devs) / len(kept_devs) if kept_devs else float('inf')
 
             if pano_keep:
                 keep_indices.extend(pano_keep)
@@ -138,7 +149,7 @@ class DA3Model:
             filtered_pred.processed_images = [prediction.processed_images[i] for i in keep_indices]
 
         print(f"Cleaned scene: Kept {len(filtered_views)}/{len(views)} views. (dist_thresh={dist_thresh}, angle_thresh={angle_thresh})")
-        return filtered_views, DA3Result(final_pano_poses, filtered_pred, pano_keep_counts)
+        return filtered_views, DA3Result(final_pano_poses, filtered_pred, pano_keep_counts, pano_avg_deviation)
 
     def process_views(self, views: list[View], dist_thresh=0.2, angle_thresh=1):
         """

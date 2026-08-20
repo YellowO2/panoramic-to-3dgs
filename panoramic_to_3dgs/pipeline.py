@@ -60,6 +60,87 @@ def test_edge_da3(
     return pose_a, pose_b, pts, cols
 
 
+def score_pano_da3(
+    path: str,
+    cfg: "PipelineConfig",
+    views_base: str,
+    da3: "DA3Model",
+    score_id: int | str = 0,
+    dist_thresh: float = 0.2,
+    angle_thresh: float = 1,
+    step_degrees: int = 20,
+) -> int:
+    """The GPU-side primitive a client-side graph algorithm calls once per
+    candidate pano to rate it BEFORE spending a real pairwise test on it:
+    extract that pano's own view slices and run them through DA3 alone (no
+    other pano in the batch), then count how many survive DA3's own
+    consensus filter. An internally coherent pano (high count) is more
+    likely to pair well with a real neighbor than a low one -- validated
+    against real data (see google-map-to-3d's
+    tests/debug_solo_score_experiment.py): pairwise success rate rose
+    monotonically with the weaker candidate's score, 33% at score 6 up to
+    100% at score 13+.
+
+    Same already-loaded DA3Model/views_base as test_edge_da3 -- callers
+    doing many of these in one ZeroGPU session should share both rather
+    than reload/re-init.
+    """
+    score_dir = os.path.join(views_base, f"s{score_id}")
+    os.makedirs(score_dir, exist_ok=True)
+    views = extract_views_for_da3(path, score_dir, prefix=f"s{score_id}_", pano_id=0, step_degrees=step_degrees)
+    filtered_views, _ = da3.process_views(views, dist_thresh=dist_thresh, angle_thresh=angle_thresh)
+    return len(filtered_views)
+
+
+def test_edge_da3_bridge(
+    path_a: str,
+    path_b: str,
+    cfg: "PipelineConfig",
+    views_base: str,
+    da3: "DA3Model",
+    test_id: int | str = 0,
+    dist_thresh: float = 0.2,
+    angle_thresh: float = 1,
+    step_degrees: int = 20,
+) -> dict | None:
+    """Diagnostic variant of test_edge_da3 for a client-side bridging
+    search (joining two already-built pieces that GPS alone would
+    otherwise place independently). Never gates pass/fail itself -- the
+    caller applies its own (relaxed) accept bar across several attempts,
+    using the raw keep-rate/deviation data returned here to pick the best
+    one if nothing clears that bar outright.
+
+    Returns None only if a pano got ZERO kept views (no consensus pose
+    exists to offer at all -- see DA3Model._filter_at_threshold). Else a
+    dict: pose_a/pose_b (center, rotation), pts, cols (same as
+    test_edge_da3), keep_a/keep_b ((kept, total) view counts), and
+    avg_dev_a/avg_dev_b (average real-world deviation in meters among
+    that pano's own KEPT views only -- a single wild outlier gets
+    filtered out by the keep-rate check anyway, so it says nothing about
+    quality; the kept views still not agreeing well with each other on
+    average is what actually flags a bad pairing).
+    """
+    test_dir = os.path.join(views_base, f"b{test_id}")
+    os.makedirs(test_dir, exist_ok=True)
+    id_a, id_b = os.path.basename(path_a), os.path.basename(path_b)
+    _, res, pts, cols, _, _ = _run_da3(
+        path_a, [path_b], cfg, test_dir,
+        da3=da3, dist_thresh=dist_thresh, angle_thresh=angle_thresh, step_degrees=step_degrees,
+    )
+    ka, ta = res.pano_keep_counts.get(id_a, (0, 1))
+    kb, tb = res.pano_keep_counts.get(id_b, (0, 1))
+    if ka == 0 or kb == 0 or id_a not in res.pano_poses or id_b not in res.pano_poses:
+        return None
+    pose_a = (res.pano_poses[id_a]["center"], res.pano_poses[id_a]["rotation"])
+    pose_b = (res.pano_poses[id_b]["center"], res.pano_poses[id_b]["rotation"])
+    return {
+        "pose_a": pose_a, "pose_b": pose_b, "pts": pts, "cols": cols,
+        "keep_a": (ka, ta), "keep_b": (kb, tb),
+        "avg_dev_a": res.pano_avg_deviation.get(id_a, float("inf")),
+        "avg_dev_b": res.pano_avg_deviation.get(id_b, float("inf")),
+    }
+
+
 def save_da3_pointcloud(points: np.ndarray, colors: np.ndarray, path: str) -> str:
     """Thin public wrapper over components.Saver -- for callers outside this
     package that need to save a raw point cloud without reaching into this
