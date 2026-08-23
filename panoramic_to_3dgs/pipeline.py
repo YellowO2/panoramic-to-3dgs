@@ -37,17 +37,24 @@ def test_edge_da3(
     This is deliberately the ONLY thing this package knows about "an edge"
     -- no notion of dates, corridors, or coverage. Returns None if either
     pano fails the keep-rate health check, else (pose_a, pose_b, pts,
-    cols):
+    cols, per_pano_pts, per_pano_cols):
       - pose_*: (center: np.ndarray(3,), rotation: np.ndarray(3,3)) --
         world-to-pano rotation, in THIS call's own arbitrary local frame.
         Use rigid_align to stitch onto a caller-side accumulated frame.
-      - pts, cols: this edge's own backprojected points/colors, same local
-        frame as pose_*.
+      - pts, cols: this edge's own backprojected points/colors (BOTH panos
+        combined), same local frame as pose_*.
+      - per_pano_pts, per_pano_cols: {os.path.basename(path): points/colors}
+        -- the same points as pts/cols, split by which of path_a/path_b
+        they came from. A caller that already has one side of the edge
+        anchored (e.g. re-testing an already-confirmed node against a new
+        neighbor) should use only the NEW side's slice here rather than
+        pts/cols wholesale, to avoid re-adding points for a pano it
+        already has from an earlier edge.
     """
     test_dir = os.path.join(views_base, f"t{test_id}")
     os.makedirs(test_dir, exist_ok=True)
     id_a, id_b = os.path.basename(path_a), os.path.basename(path_b)
-    _, res, pts, cols, _, _ = _run_da3(
+    _, res, pts, cols, per_pano_pts, per_pano_cols = _run_da3(
         path_a, [path_b], cfg, test_dir,
         da3=da3, dist_thresh=dist_thresh, angle_thresh=angle_thresh, step_degrees=step_degrees,
     )
@@ -57,7 +64,55 @@ def test_edge_da3(
         return None
     pose_a = (res.pano_poses[id_a]["center"], res.pano_poses[id_a]["rotation"])
     pose_b = (res.pano_poses[id_b]["center"], res.pano_poses[id_b]["rotation"])
-    return pose_a, pose_b, pts, cols
+    return pose_a, pose_b, pts, cols, per_pano_pts, per_pano_cols
+
+
+def rate_pano_da3(
+    path: str,
+    cfg: "PipelineConfig",
+    views_base: str,
+    da3: "DA3Model",
+    rate_id: int | str = 0,
+    dist_thresh: float = 0.2,
+    angle_thresh: float = 1,
+    step_degrees: int = 20,
+):
+    """The GPU-side primitive a client-side graph algorithm calls once per
+    dot, the first time it's visited: run DA3 on this pano ALONE (its own
+    view slices only, no partner pano) to get both a consistency score
+    (see score_pano_da3 -- same computation, reused here) and a REAL solo
+    point cloud, so a dot that never ends up pairing with any real
+    neighbor can still contribute its own solo reconstruction as a
+    fallback piece, instead of contributing nothing.
+
+    Same already-loaded DA3Model/views_base convention as test_edge_da3/
+    score_pano_da3 -- share both across many calls in one ZeroGPU session.
+
+    Returns (score, pose, pts, cols):
+      - score: len(filtered_views), same meaning as score_pano_da3's return.
+      - pose: (center, rotation) in this call's own arbitrary local frame,
+        same convention as test_edge_da3's pose_a/pose_b -- None if DA3
+        produced no pose at all for this pano (extremely rare, see
+        test_edge_da3_bridge's own docstring for why that can still
+        happen).
+      - pts, cols: this pano's own backprojected points/colors, same local
+        frame as pose. Empty arrays if nothing survived DA3's filter (pose
+        can still be non-None in that case -- DA3Model always provides a
+        fallback pose regardless of keep-rate).
+    """
+    rate_dir = os.path.join(views_base, f"r{rate_id}")
+    os.makedirs(rate_dir, exist_ok=True)
+    pano_id = os.path.basename(path)
+    views = extract_views_for_da3(path, rate_dir, prefix=f"r{rate_id}_", pano_id=pano_id, step_degrees=step_degrees)
+    filtered_views, da3_result = da3.process_views(views, dist_thresh=dist_thresh, angle_thresh=angle_thresh)
+    _, _, per_pano_pts, per_pano_cols = backproject_views_to_pcd(filtered_views, da3_result)
+    score = len(filtered_views)
+    if pano_id not in da3_result.pano_poses:
+        return score, None, np.zeros((0, 3)), np.zeros((0, 3))
+    pose = (da3_result.pano_poses[pano_id]["center"], da3_result.pano_poses[pano_id]["rotation"])
+    pts = per_pano_pts.get(pano_id, np.zeros((0, 3)))
+    cols = per_pano_cols.get(pano_id, np.zeros((0, 3)))
+    return score, pose, pts, cols
 
 
 def score_pano_da3(
