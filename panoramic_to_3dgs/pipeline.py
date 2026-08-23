@@ -2,6 +2,7 @@ import os
 import json
 import tempfile
 import contextlib
+import time
 import numpy as np
 import torch
 
@@ -112,8 +113,13 @@ def rate_pano_da3(
     rate_dir = os.path.join(views_base, f"r{rate_id}")
     os.makedirs(rate_dir, exist_ok=True)
     pano_id = os.path.basename(path)
+    t_extract0 = time.monotonic()
     views = extract_views_for_da3(path, rate_dir, prefix=f"r{rate_id}_", pano_id=pano_id, step_degrees=step_degrees)
+    t_extract = time.monotonic() - t_extract0
+    t_infer0 = time.monotonic()
     filtered_views, da3_result = da3.process_views(views, dist_thresh=dist_thresh, angle_thresh=angle_thresh)
+    t_infer = time.monotonic() - t_infer0
+    print(f"[timing] rate_pano_da3({pano_id}): {len(views)} view(s) extracted in {t_extract:.2f}s, DA3 inference in {t_infer:.2f}s")
     _, _, per_pano_pts, per_pano_cols = backproject_views_to_pcd(filtered_views, da3_result)
     score = len(filtered_views)
     n_kept, n_total = da3_result.pano_keep_counts.get(pano_id, (score, len(views)))
@@ -251,16 +257,21 @@ def _run_da3(
     the same viewpoint coverage -- exposed for experimenting with that
     tradeoff, not used by default anywhere.
     """
+    t_extract0 = time.monotonic()
     all_views = []
     for i, path in enumerate([target_depth_path, *support_paths]):
         da3_dir = os.path.join(views_base, f"views_pano_{i}_da3")
         os.makedirs(da3_dir, exist_ok=True)
         all_views.extend(extract_views_for_da3(path, da3_dir, prefix=f"pano_{i}_", pano_id=os.path.basename(path), step_degrees=step_degrees))
+    t_extract = time.monotonic() - t_extract0
 
     owns_da3 = da3 is None
     if owns_da3:
         da3 = DA3Model(cfg.da3_model)
+    t_infer0 = time.monotonic()
     filtered_views, da3_result = da3.process_views(all_views, dist_thresh=dist_thresh, angle_thresh=angle_thresh)
+    t_infer = time.monotonic() - t_infer0
+    print(f"[timing] _run_da3: {len(all_views)} view(s) extracted in {t_extract:.2f}s, DA3 inference in {t_infer:.2f}s")
     merged_pts, merged_cols, per_pano_pts, per_pano_cols = backproject_views_to_pcd(
         filtered_views, da3_result
     )
