@@ -37,7 +37,7 @@ def test_edge_da3(
     This is deliberately the ONLY thing this package knows about "an edge"
     -- no notion of dates, corridors, or coverage. Returns None if either
     pano fails the keep-rate health check, else (pose_a, pose_b, pts,
-    cols, per_pano_pts, per_pano_cols):
+    cols, per_pano_pts, per_pano_cols, per_pano_views):
       - pose_*: (center: np.ndarray(3,), rotation: np.ndarray(3,3)) --
         world-to-pano rotation, in THIS call's own arbitrary local frame.
         Use rigid_align to stitch onto a caller-side accumulated frame.
@@ -50,6 +50,9 @@ def test_edge_da3(
         neighbor) should use only the NEW side's slice here rather than
         pts/cols wholesale, to avoid re-adding points for a pano it
         already has from an earlier edge.
+      - per_pano_views: {os.path.basename(path): (kept, total)} -- how many
+        of that pano's own extracted views survived DA3's consensus filter,
+        for diagnostics/metadata (see rate_pano_da3 for the same shape).
     """
     test_dir = os.path.join(views_base, f"t{test_id}")
     os.makedirs(test_dir, exist_ok=True)
@@ -64,7 +67,8 @@ def test_edge_da3(
         return None
     pose_a = (res.pano_poses[id_a]["center"], res.pano_poses[id_a]["rotation"])
     pose_b = (res.pano_poses[id_b]["center"], res.pano_poses[id_b]["rotation"])
-    return pose_a, pose_b, pts, cols, per_pano_pts, per_pano_cols
+    per_pano_views = {id_a: (ka, ta), id_b: (kb, tb)}
+    return pose_a, pose_b, pts, cols, per_pano_pts, per_pano_cols, per_pano_views
 
 
 def rate_pano_da3(
@@ -88,7 +92,7 @@ def rate_pano_da3(
     Same already-loaded DA3Model/views_base convention as test_edge_da3/
     score_pano_da3 -- share both across many calls in one ZeroGPU session.
 
-    Returns (score, pose, pts, cols):
+    Returns (score, pose, pts, cols, n_kept, n_total):
       - score: len(filtered_views), same meaning as score_pano_da3's return.
       - pose: (center, rotation) in this call's own arbitrary local frame,
         same convention as test_edge_da3's pose_a/pose_b -- None if DA3
@@ -99,6 +103,11 @@ def rate_pano_da3(
         frame as pose. Empty arrays if nothing survived DA3's filter (pose
         can still be non-None in that case -- DA3Model always provides a
         fallback pose regardless of keep-rate).
+      - n_kept, n_total: how many of this pano's own extracted views
+        survived DA3's consensus filter, out of how many were extracted
+        (n_kept == score always here, since only one pano's views are ever
+        in play for a solo rate call -- exposed separately anyway to match
+        test_edge_da3's per_pano_views shape for callers building metadata).
     """
     rate_dir = os.path.join(views_base, f"r{rate_id}")
     os.makedirs(rate_dir, exist_ok=True)
@@ -107,12 +116,13 @@ def rate_pano_da3(
     filtered_views, da3_result = da3.process_views(views, dist_thresh=dist_thresh, angle_thresh=angle_thresh)
     _, _, per_pano_pts, per_pano_cols = backproject_views_to_pcd(filtered_views, da3_result)
     score = len(filtered_views)
+    n_kept, n_total = da3_result.pano_keep_counts.get(pano_id, (score, len(views)))
     if pano_id not in da3_result.pano_poses:
-        return score, None, np.zeros((0, 3)), np.zeros((0, 3))
+        return score, None, np.zeros((0, 3)), np.zeros((0, 3)), n_kept, n_total
     pose = (da3_result.pano_poses[pano_id]["center"], da3_result.pano_poses[pano_id]["rotation"])
     pts = per_pano_pts.get(pano_id, np.zeros((0, 3)))
     cols = per_pano_cols.get(pano_id, np.zeros((0, 3)))
-    return score, pose, pts, cols
+    return score, pose, pts, cols, n_kept, n_total
 
 
 def score_pano_da3(
