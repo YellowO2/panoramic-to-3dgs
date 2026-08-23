@@ -17,213 +17,6 @@ from sharp.utils.gaussians import Gaussians3D, save_ply
 from panoramic_to_3dgs.config import PipelineConfig
 
 
-def test_edge_da3(
-    path_a: str,
-    path_b: str,
-    cfg: "PipelineConfig",
-    views_base: str,
-    da3: "DA3Model",
-    test_id: int | str = 0,
-    dist_thresh: float = 0.2,
-    angle_thresh: float = 1,
-    step_degrees: int = 20,
-    keep_rate_threshold: float = 0.6,
-):
-    """The GPU-side primitive a client-side graph algorithm calls once per
-    candidate edge: run one real pairwise DA3 test between two already-
-    downloaded panos, using an already-loaded DA3Model (loading is
-    expensive -- callers making many calls in one ZeroGPU session should
-    load once and reuse, same as _run_da3's own da3= parameter).
-
-    This is deliberately the ONLY thing this package knows about "an edge"
-    -- no notion of dates, corridors, or coverage. Returns None if either
-    pano fails the keep-rate health check, else (pose_a, pose_b, pts,
-    cols, per_pano_pts, per_pano_cols, per_pano_views):
-      - pose_*: (center: np.ndarray(3,), rotation: np.ndarray(3,3)) --
-        world-to-pano rotation, in THIS call's own arbitrary local frame.
-        Use rigid_align to stitch onto a caller-side accumulated frame.
-      - pts, cols: this edge's own backprojected points/colors (BOTH panos
-        combined), same local frame as pose_*.
-      - per_pano_pts, per_pano_cols: {os.path.basename(path): points/colors}
-        -- the same points as pts/cols, split by which of path_a/path_b
-        they came from. A caller that already has one side of the edge
-        anchored (e.g. re-testing an already-confirmed node against a new
-        neighbor) should use only the NEW side's slice here rather than
-        pts/cols wholesale, to avoid re-adding points for a pano it
-        already has from an earlier edge.
-      - per_pano_views: {os.path.basename(path): (kept, total)} -- how many
-        of that pano's own extracted views survived DA3's consensus filter,
-        for diagnostics/metadata (see rate_pano_da3 for the same shape).
-    """
-    test_dir = os.path.join(views_base, f"t{test_id}")
-    os.makedirs(test_dir, exist_ok=True)
-    id_a, id_b = os.path.basename(path_a), os.path.basename(path_b)
-    _, res, pts, cols, per_pano_pts, per_pano_cols = _run_da3(
-        path_a, [path_b], cfg, test_dir,
-        da3=da3, dist_thresh=dist_thresh, angle_thresh=angle_thresh, step_degrees=step_degrees,
-    )
-    ka, ta = res.pano_keep_counts.get(id_a, (0, 1))
-    kb, tb = res.pano_keep_counts.get(id_b, (0, 1))
-    if (ka / ta) < keep_rate_threshold or (kb / tb) < keep_rate_threshold:
-        return None
-    pose_a = (res.pano_poses[id_a]["center"], res.pano_poses[id_a]["rotation"])
-    pose_b = (res.pano_poses[id_b]["center"], res.pano_poses[id_b]["rotation"])
-    per_pano_views = {id_a: (ka, ta), id_b: (kb, tb)}
-    return pose_a, pose_b, pts, cols, per_pano_pts, per_pano_cols, per_pano_views
-
-
-def rate_pano_da3(
-    path: str,
-    cfg: "PipelineConfig",
-    views_base: str,
-    da3: "DA3Model",
-    rate_id: int | str = 0,
-    dist_thresh: float = 0.2,
-    angle_thresh: float = 1,
-    step_degrees: int = 20,
-):
-    """The GPU-side primitive a client-side graph algorithm calls once per
-    dot, the first time it's visited: run DA3 on this pano ALONE (its own
-    view slices only, no partner pano) to get both a consistency score
-    (see score_pano_da3 -- same computation, reused here) and a REAL solo
-    point cloud, so a dot that never ends up pairing with any real
-    neighbor can still contribute its own solo reconstruction as a
-    fallback piece, instead of contributing nothing.
-
-    Same already-loaded DA3Model/views_base convention as test_edge_da3/
-    score_pano_da3 -- share both across many calls in one ZeroGPU session.
-
-    Returns (score, pose, pts, cols, n_kept, n_total):
-      - score: len(filtered_views), same meaning as score_pano_da3's return.
-      - pose: (center, rotation) in this call's own arbitrary local frame,
-        same convention as test_edge_da3's pose_a/pose_b -- None if DA3
-        produced no pose at all for this pano (extremely rare, see
-        test_edge_da3_bridge's own docstring for why that can still
-        happen).
-      - pts, cols: this pano's own backprojected points/colors, same local
-        frame as pose. Empty arrays if nothing survived DA3's filter (pose
-        can still be non-None in that case -- DA3Model always provides a
-        fallback pose regardless of keep-rate).
-      - n_kept, n_total: how many of this pano's own extracted views
-        survived DA3's consensus filter, out of how many were extracted
-        (n_kept == score always here, since only one pano's views are ever
-        in play for a solo rate call -- exposed separately anyway to match
-        test_edge_da3's per_pano_views shape for callers building metadata).
-    """
-    rate_dir = os.path.join(views_base, f"r{rate_id}")
-    os.makedirs(rate_dir, exist_ok=True)
-    pano_id = os.path.basename(path)
-    t_extract0 = time.monotonic()
-    views = extract_views_for_da3(path, rate_dir, prefix=f"r{rate_id}_", pano_id=pano_id, step_degrees=step_degrees)
-    t_extract = time.monotonic() - t_extract0
-    t_infer0 = time.monotonic()
-    filtered_views, da3_result = da3.process_views(views, dist_thresh=dist_thresh, angle_thresh=angle_thresh)
-    t_infer = time.monotonic() - t_infer0
-    t_backproject0 = time.monotonic()
-    _, _, per_pano_pts, per_pano_cols = backproject_views_to_pcd(filtered_views, da3_result)
-    t_backproject = time.monotonic() - t_backproject0
-    print(f"[timing] rate_pano_da3({pano_id}): {len(views)} view(s) extracted in {t_extract:.2f}s, "
-          f"DA3 inference in {t_infer:.2f}s, backproject in {t_backproject:.2f}s")
-    score = len(filtered_views)
-    n_kept, n_total = da3_result.pano_keep_counts.get(pano_id, (score, len(views)))
-    if pano_id not in da3_result.pano_poses:
-        return score, None, np.zeros((0, 3)), np.zeros((0, 3)), n_kept, n_total
-    pose = (da3_result.pano_poses[pano_id]["center"], da3_result.pano_poses[pano_id]["rotation"])
-    pts = per_pano_pts.get(pano_id, np.zeros((0, 3)))
-    cols = per_pano_cols.get(pano_id, np.zeros((0, 3)))
-    return score, pose, pts, cols, n_kept, n_total
-
-
-def score_pano_da3(
-    path: str,
-    cfg: "PipelineConfig",
-    views_base: str,
-    da3: "DA3Model",
-    score_id: int | str = 0,
-    dist_thresh: float = 0.2,
-    angle_thresh: float = 1,
-    step_degrees: int = 20,
-) -> int:
-    """The GPU-side primitive a client-side graph algorithm calls once per
-    candidate pano to rate it BEFORE spending a real pairwise test on it:
-    extract that pano's own view slices and run them through DA3 alone (no
-    other pano in the batch), then count how many survive DA3's own
-    consensus filter. An internally coherent pano (high count) is more
-    likely to pair well with a real neighbor than a low one -- validated
-    against real data (see google-map-to-3d's
-    tests/debug_solo_score_experiment.py): pairwise success rate rose
-    monotonically with the weaker candidate's score, 33% at score 6 up to
-    100% at score 13+.
-
-    Same already-loaded DA3Model/views_base as test_edge_da3 -- callers
-    doing many of these in one ZeroGPU session should share both rather
-    than reload/re-init.
-    """
-    score_dir = os.path.join(views_base, f"s{score_id}")
-    os.makedirs(score_dir, exist_ok=True)
-    views = extract_views_for_da3(path, score_dir, prefix=f"s{score_id}_", pano_id=0, step_degrees=step_degrees)
-    filtered_views, _ = da3.process_views(views, dist_thresh=dist_thresh, angle_thresh=angle_thresh)
-    return len(filtered_views)
-
-
-def test_edge_da3_bridge(
-    path_a: str,
-    path_b: str,
-    cfg: "PipelineConfig",
-    views_base: str,
-    da3: "DA3Model",
-    test_id: int | str = 0,
-    dist_thresh: float = 0.2,
-    angle_thresh: float = 1,
-    step_degrees: int = 20,
-) -> dict | None:
-    """Diagnostic variant of test_edge_da3 for a client-side bridging
-    search (joining two already-built pieces -- a real DA3 estimate,
-    even a poor one, is trusted over independent GPS placement between
-    them; GPS is only ever used once, to anchor the final combined
-    result to real-world coordinates, not to reconcile pieces against
-    each other). Never gates pass/fail itself -- the caller ranks
-    several attempts using the raw keep-rate/deviation data returned
-    here and always uses the best one found, however weak.
-
-    Returns None only if a pano has no pose at all in this DA3 call --
-    an extremely rare case (e.g. view extraction itself produced
-    nothing usable), since DA3Model now always provides a pose per pano
-    regardless of keep-rate (falling back to the raw pre-filter
-    consensus when nothing survives strict filtering -- see
-    DA3Model._filter_at_threshold). Else a dict: pose_a/pose_b (center,
-    rotation), pts, cols (same as test_edge_da3, empty arrays if
-    nothing survived filtering), keep_a/keep_b ((kept, total) view
-    counts), and avg_dev_a/avg_dev_b (average real-world deviation in
-    meters among that pano's own KEPT views only -- a single wild
-    outlier gets filtered out by the keep-rate check anyway, so it says
-    nothing about quality; the kept views still not agreeing well with
-    each other on average is what actually flags a bad pairing. inf if
-    zero views were kept).
-    """
-    test_dir = os.path.join(views_base, f"b{test_id}")
-    os.makedirs(test_dir, exist_ok=True)
-    id_a, id_b = os.path.basename(path_a), os.path.basename(path_b)
-    _, res, pts, cols, _, _ = _run_da3(
-        path_a, [path_b], cfg, test_dir,
-        da3=da3, dist_thresh=dist_thresh, angle_thresh=angle_thresh, step_degrees=step_degrees,
-    )
-    if id_a not in res.pano_poses or id_b not in res.pano_poses:
-        return None
-    ka, ta = res.pano_keep_counts.get(id_a, (0, 1))
-    kb, tb = res.pano_keep_counts.get(id_b, (0, 1))
-    pose_a = (res.pano_poses[id_a]["center"], res.pano_poses[id_a]["rotation"])
-    pose_b = (res.pano_poses[id_b]["center"], res.pano_poses[id_b]["rotation"])
-    return {
-        "pose_a": pose_a, "pose_b": pose_b,
-        "pts": pts if pts is not None else np.zeros((0, 3)),
-        "cols": cols if cols is not None else np.zeros((0, 3)),
-        "keep_a": (ka, ta), "keep_b": (kb, tb),
-        "avg_dev_a": res.pano_avg_deviation.get(id_a, float("inf")),
-        "avg_dev_b": res.pano_avg_deviation.get(id_b, float("inf")),
-    }
-
-
 def save_da3_pointcloud(points: np.ndarray, colors: np.ndarray, path: str) -> str:
     """Thin public wrapper over components.Saver -- for callers outside this
     package that need to save a raw point cloud without reaching into this
@@ -232,7 +25,7 @@ def save_da3_pointcloud(points: np.ndarray, colors: np.ndarray, path: str) -> st
     return path
 
 
-def _run_da3(
+def run_da3(
     target_depth_path: str,
     support_paths: list[str],
     cfg: "PipelineConfig",
@@ -242,10 +35,34 @@ def _run_da3(
     angle_thresh: float = 1,
     step_degrees: int = 20,
 ):
-    """Run the entire DA3 side of the pipeline: slice target + support panos
-    into views, run DA3's joint multi-view pose+depth inference, and
-    backproject to world-space points/colors. Shared by run() (depth/scale
-    support for SHARP) and run_da3_pointcloud() (the entire output).
+    """THE core primitive this package exposes: run DA3 jointly on a list
+    of panos (target_depth_path plus any support_paths -- for a plain
+    N-pano batch with no distinguished "target", just pass the whole list
+    as target_depth_path=paths[0], support_paths=paths[1:], order doesn't
+    matter to DA3 itself). Slices each pano into views, runs DA3's joint
+    multi-view pose+depth inference, and backprojects to world-space
+    points/colors. This package makes no decisions about what counts as a
+    "good" result, an "edge," or a "rating" -- that's the caller's own
+    domain logic (thresholds, pass/fail, which candidate wins), kept
+    entirely out of this package on purpose so it stays a thin, general
+    DA3 wrapper. Shared internally by run() (depth/scale support for
+    SHARP) and run_da3_pointcloud().
+
+    Returns (filtered_views, da3_result, merged_pts, merged_cols,
+    per_pano_pts, per_pano_cols):
+      - filtered_views: views that survived DA3's consensus filter.
+      - da3_result: DA3Result (pano_poses, pano_keep_counts,
+        pano_avg_deviation, prediction) -- see DA3Model.py. Callers read
+        pano_poses[pano_id]["center"/"rotation"] for a pose,
+        pano_keep_counts[pano_id] for (kept, total) view counts, and
+        pano_avg_deviation[pano_id] for consensus quality, all keyed by
+        os.path.basename(path).
+      - merged_pts, merged_cols: all panos' backprojected points/colors
+        combined, in this call's own arbitrary local frame.
+      - per_pano_pts, per_pano_cols: {os.path.basename(path): points/
+        colors} -- the same points split by which pano they came from,
+        for a caller that only wants one pano's own slice (e.g. to avoid
+        re-adding points for an already-anchored pano).
 
     da3: reuse an already-loaded DA3Model instead of loading (and deleting)
     a fresh one -- for a caller making several of these calls in one GPU
@@ -279,7 +96,7 @@ def _run_da3(
         filtered_views, da3_result
     )
     t_backproject = time.monotonic() - t_backproject0
-    print(f"[timing] _run_da3: {len(all_views)} view(s) extracted in {t_extract:.2f}s, "
+    print(f"[timing] run_da3: {len(all_views)} view(s) extracted in {t_extract:.2f}s, "
           f"DA3 inference in {t_infer:.2f}s, backproject in {t_backproject:.2f}s")
     if owns_da3:
         del da3
@@ -403,7 +220,7 @@ class Pipeline:
                 da3_cols,
                 da3_pts_per_pano,
                 _da3_cols_per_pano,
-            ) = _run_da3(target_depth_path, support_paths, cfg, views_base)
+            ) = run_da3(target_depth_path, support_paths, cfg, views_base)
             pano_poses = da3_result.pano_poses
 
             if da3_pts is not None:
@@ -518,7 +335,7 @@ class Pipeline:
         os.makedirs(output_dir, exist_ok=True)
 
         with tempfile.TemporaryDirectory() as views_base:
-            _, _, pts, cols, _, _ = _run_da3(target_depth_path, support_paths, cfg, views_base, step_degrees=step_degrees)
+            _, _, pts, cols, _, _ = run_da3(target_depth_path, support_paths, cfg, views_base, step_degrees=step_degrees)
 
         if pts is None:
             raise RuntimeError(
