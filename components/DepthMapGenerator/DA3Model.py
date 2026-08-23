@@ -13,9 +13,17 @@ class DA3Result:
 
 class DA3Model:
     def __init__(self, model_path="./models/models--depth-anything--DA3NESTED-GIANT-LARGE-1.1/snapshots/b2359bdf726fb44ef62acca04d629dcf158053e7", device="cuda"):
+        # Two separate steps (load to CPU, then move to device), not one
+        # fused from_pretrained(...).to(device) call -- matches DA3's own
+        # official Space (depth_anything_3/app/modules/model_inference.py),
+        # which loads to CPU first specifically to keep weight loading
+        # itself separate from the actual CUDA device-placement step.
         self.device = device
-        print(f"Loading Depth Anything 3 model from '{model_path}' on {device}...")
-        self.model = DepthAnything3.from_pretrained(model_path).to(device=device)
+        print(f"Loading Depth Anything 3 model from '{model_path}'...")
+        self.model = DepthAnything3.from_pretrained(model_path).to(device="cpu")
+        if device != "cpu":
+            print(f"Moving Depth Anything 3 model to {device}...")
+            self.model = self.model.to(device=device)
 
     def _consensus_pose(self, indices: list[int], views: list[View], prediction):
         """Median center + mean-quaternion rotation across exactly the given
