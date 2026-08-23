@@ -119,8 +119,11 @@ def rate_pano_da3(
     t_infer0 = time.monotonic()
     filtered_views, da3_result = da3.process_views(views, dist_thresh=dist_thresh, angle_thresh=angle_thresh)
     t_infer = time.monotonic() - t_infer0
-    print(f"[timing] rate_pano_da3({pano_id}): {len(views)} view(s) extracted in {t_extract:.2f}s, DA3 inference in {t_infer:.2f}s")
+    t_backproject0 = time.monotonic()
     _, _, per_pano_pts, per_pano_cols = backproject_views_to_pcd(filtered_views, da3_result)
+    t_backproject = time.monotonic() - t_backproject0
+    print(f"[timing] rate_pano_da3({pano_id}): {len(views)} view(s) extracted in {t_extract:.2f}s, "
+          f"DA3 inference in {t_infer:.2f}s, backproject in {t_backproject:.2f}s")
     score = len(filtered_views)
     n_kept, n_total = da3_result.pano_keep_counts.get(pano_id, (score, len(views)))
     if pano_id not in da3_result.pano_poses:
@@ -271,10 +274,13 @@ def _run_da3(
     t_infer0 = time.monotonic()
     filtered_views, da3_result = da3.process_views(all_views, dist_thresh=dist_thresh, angle_thresh=angle_thresh)
     t_infer = time.monotonic() - t_infer0
-    print(f"[timing] _run_da3: {len(all_views)} view(s) extracted in {t_extract:.2f}s, DA3 inference in {t_infer:.2f}s")
+    t_backproject0 = time.monotonic()
     merged_pts, merged_cols, per_pano_pts, per_pano_cols = backproject_views_to_pcd(
         filtered_views, da3_result
     )
+    t_backproject = time.monotonic() - t_backproject0
+    print(f"[timing] _run_da3: {len(all_views)} view(s) extracted in {t_extract:.2f}s, "
+          f"DA3 inference in {t_infer:.2f}s, backproject in {t_backproject:.2f}s")
     if owns_da3:
         del da3
         torch.cuda.empty_cache()
