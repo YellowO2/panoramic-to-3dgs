@@ -16,7 +16,7 @@ dependencies = [
     "PyYAML",
     "diffusers",
     "transformers",
-    "depth-anything-3 @ git+https://github.com/ByteDance-Seed/Depth-Anything-3.git@41736238f5bced4debf3f2a12375d2466874866d",
+    "panoramic-da3 @ git+https://github.com/YellowO2/panoramic-da3.git",
     "sharp @ git+https://github.com/apple/ml-sharp.git@1eaa046834b81852261262b41b0919f5c1efdd2e",
 ]
 

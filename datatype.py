@@ -1,22 +1,12 @@
 from dataclasses import dataclass
 from typing import Optional
-import numpy as np
 from sharp.utils.gaussians import Gaussians3D
+from panoramic_da3 import View as DA3View
+
 
 @dataclass
-class View:
-    path: str # path to the view image
-    width: int
-    height: int
-    yaw: float
-    pitch: float
-    hfov: float
-    vfov: float
-    focal_px: float
-
-    # --- Identification and Grouping ---
-    pano_id: int | str = 0  # To group slices from the same panorama
-
-    # --- may or may not have depending on pipeline used ---
-    depth: Optional[np.ndarray] = None
+class View(DA3View):
+    # SHARP's own generated splat for this view -- not something
+    # panoramic_da3's View knows about, since that package has no SHARP/GS
+    # step at all.
     splat: Optional[Gaussians3D] = None
