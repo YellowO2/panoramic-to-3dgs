@@ -1,6 +1,6 @@
 # Panoramic to 3DGS
 
-Turn one equirectangular panorama into a 3D Gaussian Splat. Try it in the **Panorama → 3DGS** tab of the [Hugging Face Space](https://huggingface.co/spaces/potato-bug/street-view-to-3dgs).
+Turn one equirectangular panorama into a 3D Gaussian Splat. Try it in the **Panorama → 3DGS** tab of the [Hugging Face Space](https://huggingface.co/spaces/potato-bug/street-view-to-3d).
 
 <table>
 <tr>
