@@ -3,12 +3,13 @@ import tempfile
 
 import numpy as np
 import torch
-from sharp.utils.gaussians import Gaussians3D, save_ply
+from sharp.utils.gaussians import Gaussians3D
 
 from panoramic_to_3dgs.components.SplatGenerator.SplatGenerator import SplatGenerator
 from panoramic_to_3dgs.components.SplatProcessor.SplatProcessor import SplatProcessor
 from panoramic_to_3dgs.components.ViewExtractor.ViewExtractor import extract_views
 from panoramic_to_3dgs.config import PipelineConfig
+from panoramic_to_3dgs.spz import save_spz
 
 
 class Pipeline:
@@ -26,7 +27,7 @@ class Pipeline:
         Args:
             target_appearance_path: the panorama SHARP builds the splat from.
                 May be an edited version (e.g. relit) of the one depth came from.
-            output_dir: where final_output.ply is written.
+            output_dir: where final_output.spz is written.
             depth: DA3's view of the scene around this panorama, as
                 streetview_to_3d's da3_ops.depth_around returns it --
                 points (N, 3) and pose (center, rotation), both in one frame,
@@ -35,7 +36,7 @@ class Pipeline:
                 each other only (see SplatProcessor's SHARP-only fallback).
 
         Returns the merged splat, anchored so the panorama's capture point
-        lands at (0, 0, 0) (also saved as final_output.ply).
+        lands at (0, 0, 0) (also saved as final_output.spz, see spz.py).
         """
         cfg = self.config
         os.makedirs(output_dir, exist_ok=True)
@@ -69,9 +70,8 @@ class Pipeline:
         merged = processor.process(views, splats, pano_poses=pano_poses, all_da3_pts=points,
                                    scale_mode=cfg.scale_mode, n_da3_clean=n_clean)
 
-        final_path = os.path.join(output_dir, "final_output.ply")
-        save_ply(merged, f_px=views[0].focal_px, image_shape=(views[0].height, views[0].width),
-                 path=final_path)
+        final_path = os.path.join(output_dir, "final_output.spz")
+        save_spz(merged, final_path)
         print(f"Pipeline complete: {final_path}")
         del splats, views, processor
         torch.cuda.empty_cache()

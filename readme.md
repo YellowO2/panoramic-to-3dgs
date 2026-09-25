@@ -36,7 +36,7 @@ wget https://ml-site.cdn-apple.com/models/sharp/sharp_2572gikvuh.pt -P ./models/
 from panoramic_to_3dgs import Pipeline, PipelineConfig
 
 pipeline = Pipeline(PipelineConfig.from_yaml("config.yaml"))
-pipeline.run("pano.jpg", output_dir="out", depth=depth)  # writes out/final_output.ply
+pipeline.run("pano.jpg", output_dir="out", depth=depth)  # writes out/final_output.spz
 ```
 
 `depth` is `{"points", "pose", "n_clean"}`, as streetview-to-3d's `da3_ops.depth_around` returns it, or `None`.
