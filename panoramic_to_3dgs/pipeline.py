@@ -12,8 +12,13 @@ from panoramic_to_3dgs.config import PipelineConfig
 
 
 class Pipeline:
-    def __init__(self, config: PipelineConfig):
+    def __init__(self, config: PipelineConfig, device: str | None = None):
+        """Loads SHARP once, here, so every run() reuses it. device: None
+        picks cuda, then mps, then cpu. On a ZeroGPU Space, build this at
+        startup with device="cuda": ZeroGPU moves models placed that way onto
+        the GPU for each call, much faster than loading inside the call."""
         self.config = config
+        self.generator = SplatGenerator(config.sharp_model, device)
 
     def run(self, target_appearance_path: str, output_dir: str, depth: dict | None = None) -> Gaussians3D:
         """One panorama to one Gaussian splat, scaled against depth made elsewhere.
@@ -46,11 +51,8 @@ class Pipeline:
                                   slice_count=cfg.slice_count, prefix="pano_0_", pano_id=0,
                                   include_sky=cfg.include_sky)
             print(f"--- SHARP: {len(views)} views of the target pano ---")
-            generator = SplatGenerator(cfg.sharp_model)
-            splats = generator.generate_from_views(
+            splats = self.generator.generate_from_views(
                 views, output_dir=os.path.join(output_dir, "gs") if cfg.debug else None)
-            del generator
-            torch.cuda.empty_cache()
 
         print("--- Alignment and merge ---")
         processor = SplatProcessor(

@@ -17,7 +17,9 @@ class SplatGenerator:
         return torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
 
     def _load_sharp_predictor(self, model_path: str):
-        state_dict = torch.load(model_path, map_location=self.device, weights_only=True)
+        # onto the CPU first, then moved: a Space may build this at startup,
+        # when cuda is only emulated
+        state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
         predictor = create_predictor(PredictorParams())
         predictor.load_state_dict(state_dict)
         predictor.eval().to(self.device)
