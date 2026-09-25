@@ -1,6 +1,19 @@
 # Panoramic to 3DGS
 
-Turn one equirectangular panorama into a 3D Gaussian Splat. Depth comes from outside: the panorama's pose and a DA3 point cloud around it, which [streetview-to-3d](https://github.com/YellowO2/streetview-to-3d) makes from the panorama and its same-capture neighbours (`da3_ops.depth_around`). This package only makes and aligns the splat, and does not need DA3 installed.
+Turn one equirectangular panorama into a 3D Gaussian Splat. Try it in the **Panorama → 3DGS** tab of the [Hugging Face Space](https://huggingface.co/spaces/potato-bug/street-view-to-3dgs).
+
+<table>
+<tr>
+<td align="center"><sub>Demo Video</sub></td>
+<td align="center"><sub>Comparison with HunyuanWorld 2.0 + World Marble 1.1</sub></td>
+</tr>
+<tr>
+<td width="50%"><a href="https://youtu.be/mzIDZWxv4vA"><img src="https://img.youtube.com/vi/mzIDZWxv4vA/hqdefault.jpg" alt="Demo video"></a></td>
+<td width="50%"><a href="https://youtu.be/fYANbQXMZ_0"><img src="https://img.youtube.com/vi/fYANbQXMZ_0/maxresdefault.jpg" alt="Comparison with HunyuanWorld 2.0 + World Marble 1.1"></a></td>
+</tr>
+</table>
+
+Depth comes from outside: the panorama's pose and a DA3 point cloud around it, which [streetview-to-3d](https://github.com/YellowO2/streetview-to-3d) makes from the panorama and its same-capture neighbours (`da3_ops.depth_around`). This package only makes and aligns the splat, and does not need DA3 installed.
 
 ## How it works
 
@@ -88,3 +101,8 @@ output_dir/
 ├── final_output.ply        # Merged scene, anchored so the target pano center is (0, 0, 0)
 └── (debug artifacts when config.debug = true)
 ```
+
+## Acknowledgments
+
+- [Apple ml-sharp](https://github.com/apple/ml-sharp) (Apple sample code license)
+- [Depth-Anything-3](https://github.com/ByteDance-Seed/Depth-Anything-3) (Apache 2.0), for the depth it is aligned to
