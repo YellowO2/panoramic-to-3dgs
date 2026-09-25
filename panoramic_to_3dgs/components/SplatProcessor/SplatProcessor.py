@@ -2,8 +2,8 @@ import numpy as np
 import torch
 from scipy.spatial.transform import Rotation
 from sharp.utils.gaussians import Gaussians3D, apply_transform
-from datatype import View
-from components.SplatProcessor.utils import (
+from panoramic_to_3dgs.datatype import View
+from panoramic_to_3dgs.components.SplatProcessor.utils import (
     project_world_cloud_to_view,
     rotate_to_pose,
     scale_gaussians,
@@ -14,7 +14,7 @@ from components.SplatProcessor.utils import (
     subsample_gaussians,
     merge,
 )
-from components.SplatProcessor.alignment import (
+from panoramic_to_3dgs.components.SplatProcessor.alignment import (
     align_near_edge,
     align_da3_2dgrid,
     align_da3_y_ground,

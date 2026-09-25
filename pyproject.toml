@@ -11,18 +11,11 @@ dependencies = [
     "numpy",
     "torch",
     "opencv-python",
-    "open3d",
     "scipy",
     "PyYAML",
-    "diffusers",
-    "transformers",
-    "panoramic-da3 @ git+https://github.com/YellowO2/panoramic-da3.git",
     "sharp @ git+https://github.com/apple/ml-sharp.git@1eaa046834b81852261262b41b0919f5c1efdd2e",
 ]
 
-[tool.setuptools]
-py-modules = ["datatype"]
-
 [tool.setuptools.packages.find]
 where = ["."]
-exclude = ["third_party*", "reference*", "data*", "models*", "tests*"]
+include = ["panoramic_to_3dgs*"]

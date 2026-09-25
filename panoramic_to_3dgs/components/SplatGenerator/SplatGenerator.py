@@ -4,7 +4,7 @@ import torch
 from sharp.cli.predict import predict_image
 from sharp.models import PredictorParams, create_predictor
 from sharp.utils.gaussians import save_ply
-from datatype import View
+from panoramic_to_3dgs.datatype import View
 
 class SplatGenerator:
     def __init__(self, model_path: str, device: str = None):

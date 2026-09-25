@@ -4,16 +4,13 @@ import yaml
 
 @dataclass
 class PipelineConfig:
-    # Model paths
-    sharp_model: str = ""
-    da3_model: str = ""
+    sharp_model: str = ""  # SHARP checkpoint path
 
     # Pipeline
-    gs_backend: str = "sharp"  # 'sharp' | 'da3'
     scale_mode: str = "da3_2dgrid_global"  # 'da3_2dgrid_global' | 'da3_y_ground'
     slice_count: int = 6
     include_sky: bool = False  # include an upward (+90° pitch) SHARP view
-    debug: bool = False  # save intermediate view slices and debug PCDs
+    debug: bool = False  # save the view slices and per-view splats
 
     # SplatProcessor
     align_depth: float = 10.0
@@ -35,8 +32,6 @@ class PipelineConfig:
         processor = data.get("processor", {})
         return cls(
             sharp_model=models.get("sharp", ""),
-            da3_model=models.get("da3", ""),
-            gs_backend=pipeline.get("gs_backend", "sharp"),
             scale_mode=pipeline.get("scale_mode", "da3_2dgrid_global"),
             slice_count=pipeline.get("slice_count", 6),
             include_sky=pipeline.get("include_sky", False),

@@ -3,7 +3,7 @@ import torch
 from scipy.ndimage import distance_transform_edt, gaussian_filter
 
 from sharp.utils.gaussians import Gaussians3D
-from components.SplatProcessor.utils import (
+from panoramic_to_3dgs.components.SplatProcessor.utils import (
     measure_nearest_z,
     project_gaussians_to_2d,
     project_world_cloud_to_view,
