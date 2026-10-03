@@ -45,3 +45,7 @@ pipeline.run("pano.jpg", output_dir="out", depth=depth)  # writes out/final_outp
 
 - [Apple ml-sharp](https://github.com/apple/ml-sharp) (Apple sample code license)
 - [Depth-Anything-3](https://github.com/ByteDance-Seed/Depth-Anything-3) (Apache 2.0), for the depth it is aligned to
+
+## License
+
+MIT, see [LICENSE](LICENSE).
